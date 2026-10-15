@@ -20,6 +20,11 @@ class OpenedController extends DocumentController {
   OpenedController(this.initial, this.workspace);
   final DocumentState initial;
   final String workspace;
+  final coverPaths = <String, String>{};
+  List<Map<String, dynamic>>? versions;
+  @override
+  Future<List<Map<String, dynamic>>> historyVersions() async =>
+      versions ?? await super.historyVersions();
   @override
   DocumentState build() => initial;
   @override
@@ -29,6 +34,10 @@ class OpenedController extends DocumentController {
           .map((item) => DocumentInfo(item as Map<String, dynamic>))
           .toList()
         ..sort((a, b) => a.name.compareTo(b.name));
+  @override
+  Future<String> documentCover(String id, int version) async =>
+      coverPaths[id] ??
+      await rust.documentCover(workspace: workspace, documentId: id);
   @override
   Future<Map<String, dynamic>> projects({
     String command = 'list',
@@ -526,6 +535,19 @@ void main() {
       await tester.pumpAndSettle();
       expect(container.read(documentProvider).page, 1);
       expect(tester.takeException(), isNull);
+      await tester.runAsync(() async {
+        final controller =
+            container.read(documentProvider.notifier) as OpenedController;
+        final documents = await controller.recoverable();
+        for (final doc in documents) {
+          final path = await rust.documentCover(
+            workspace: workspace.path,
+            documentId: doc.id,
+          );
+          controller.coverPaths[doc.id] = path;
+          await seedPreview(path);
+        }
+      });
       await tester.tap(find.byTooltip('项目 / 历史'));
       Future<void> settleHome() async {
         for (var i = 0; i < 40; i++) {
@@ -535,6 +557,25 @@ void main() {
           await tester.pump();
           if (find.text('正在读取本机项目…').evaluate().isEmpty) break;
         }
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          final documents =
+              jsonDecode(
+                    await rust.recoverableDocuments(workspace: workspace.path),
+                  )
+                  as List;
+          final controller =
+              container.read(documentProvider.notifier) as OpenedController;
+          for (final document in documents) {
+            final id = document['id'] as String;
+            final path = await rust.documentCover(
+              workspace: workspace.path,
+              documentId: id,
+            );
+            controller.coverPaths[id] = path;
+            await seedPreview(path);
+          }
+        });
         await tester.pumpAndSettle();
       }
 
@@ -572,7 +613,10 @@ void main() {
         find.byType(Workbench),
         matchesGoldenFile('goldens/project-home.png'),
       );
-      expect(find.text('input.pdf'), findsWidgets);
+      expect(
+        find.text('input.pdf'),
+        findsNothing,
+      ); // Only the project entry remains on the home grid.
       await tester.tap(find.text('客户资料'));
       await tester.pumpAndSettle();
       await tester.tap(homeDocument);
@@ -582,6 +626,48 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.byType(ContinuousCanvas), findsOneWidget);
       expect(container.read(documentProvider).page, 1);
+      await tester.runAsync(() async {
+        final controller =
+            container.read(documentProvider.notifier) as OpenedController;
+        final history =
+            jsonDecode(await rust.documentHistory(documentId: document.id))
+                as List;
+        controller.versions = history
+            .map((v) => Map<String, dynamic>.from(v as Map))
+            .toList();
+      });
+      await tester.tap(find.byTooltip('历史版本'));
+      await tester.runAsync(
+        () => Future<void>.delayed(const Duration(milliseconds: 150)),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('历史版本'), findsOneWidget);
+      expect(find.textContaining('当前版本'), findsOneWidget);
+      await tester.tap(find.text('关闭'));
+      await tester.pumpAndSettle();
+      final exportedWord = File('${workspace.path}/exported.docx');
+      FilePicker.platform = SavePicker(exportedWord.path);
+      await tester.tap(find.byTooltip('导出'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Word DOCX'));
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        await tester.tap(find.text('选择位置并导出'));
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+      });
+      for (var i = 0; i < 80; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 100)),
+        );
+        await tester.pump();
+        if (find.text('导出成功').evaluate().isNotEmpty) break;
+      }
+      await tester.pumpAndSettle();
+      expect(find.text('导出成功'), findsOneWidget);
+      expect(exportedWord.existsSync(), isTrue);
+      expect(exportedWord.lengthSync(), greaterThan(1000));
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
       await tester.runAsync(() => rust.closeDocument(documentId: document.id));
     } finally {
       await tester.pumpWidget(const SizedBox.shrink());

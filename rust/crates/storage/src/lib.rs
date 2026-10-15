@@ -55,13 +55,19 @@ impl Projects {
                 );
             }
             "assign" => {
-                let document = request["document_id"].as_str().unwrap_or("");
-                if let Some(project) = request["project_id"].as_str() {
-                    self.0.execute("INSERT INTO members VALUES(?1,?2) ON CONFLICT(document_id) DO UPDATE SET project_id=excluded.project_id", params![document,project])?;
-                } else {
-                    self.0
-                        .execute("DELETE FROM members WHERE document_id=?1", [document])?;
+                let fallback = vec![request["document_id"].clone()];
+                let documents = request["document_ids"].as_array().unwrap_or(&fallback);
+                let transaction = self.0.unchecked_transaction()?;
+                for document in documents {
+                    let document = document.as_str().unwrap_or("");
+                    if let Some(project) = request["project_id"].as_str() {
+                        transaction.execute("INSERT INTO members VALUES(?1,?2) ON CONFLICT(document_id) DO UPDATE SET project_id=excluded.project_id", params![document,project])?;
+                    } else {
+                        transaction
+                            .execute("DELETE FROM members WHERE document_id=?1", [document])?;
+                    }
                 }
+                transaction.commit()?;
             }
             _ => anyhow::bail!("UNKNOWN_PROJECT_COMMAND"),
         }

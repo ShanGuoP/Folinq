@@ -26,7 +26,7 @@
 // Section: imports
 
 use flutter_rust_bridge::for_generated::byteorder::{NativeEndian, ReadBytesExt, WriteBytesExt};
-use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
 use flutter_rust_bridge::{Handler, IntoIntoDart};
 
 // Section: boilerplate
@@ -37,7 +37,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = 1175478886;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -2125140996;
 
 // Section: executor
 
@@ -228,6 +228,77 @@ fn wire__crate__api__document_command_impl(
                             api_object_id,
                             api_value,
                         )?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__document_cover_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "document_cover",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_workspace = <String>::sse_decode(&mut deserializer);
+            let api_document_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::document_cover(api_workspace, api_document_id)?;
+                        Ok(output_ok)
+                    })(),
+                )
+            }
+        },
+    )
+}
+fn wire__crate__api__document_history_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
+    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
+    rust_vec_len_: i32,
+    data_len_: i32,
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
+        flutter_rust_bridge::for_generated::TaskInfo {
+            debug_name: "document_history",
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
+        },
+        move || {
+            let message = unsafe {
+                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
+                    ptr_,
+                    rust_vec_len_,
+                    data_len_,
+                )
+            };
+            let mut deserializer =
+                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_document_id = <String>::sse_decode(&mut deserializer);
+            deserializer.end();
+            move |context| {
+                transform_result_sse::<_, flutter_rust_bridge::for_generated::anyhow::Error>(
+                    (move || {
+                        let output_ok = crate::api::document_history(api_document_id)?;
                         Ok(output_ok)
                     })(),
                 )
@@ -760,16 +831,18 @@ fn pde_ffi_dispatcher_primary_impl(
         3 => wire__crate__api__close_document_impl(port, ptr, rust_vec_len, data_len),
         4 => wire__crate__api__create_document_impl(port, ptr, rust_vec_len, data_len),
         5 => wire__crate__api__document_command_impl(port, ptr, rust_vec_len, data_len),
-        6 => wire__crate__api__open_document_impl(port, ptr, rust_vec_len, data_len),
-        7 => wire__crate__api__page_annotations_impl(port, ptr, rust_vec_len, data_len),
-        8 => wire__crate__api__prepare_external_export_impl(port, ptr, rust_vec_len, data_len),
-        9 => wire__crate__api__project_catalog_impl(port, ptr, rust_vec_len, data_len),
-        10 => wire__crate__api__recognize_page_impl(port, ptr, rust_vec_len, data_len),
-        11 => wire__crate__api__recoverable_documents_impl(port, ptr, rust_vec_len, data_len),
-        12 => wire__crate__api__render_detail_impl(port, ptr, rust_vec_len, data_len),
-        13 => wire__crate__api__render_preview_impl(port, ptr, rust_vec_len, data_len),
-        14 => wire__crate__api__restore_document_impl(port, ptr, rust_vec_len, data_len),
-        15 => wire__crate__api__view_state_impl(port, ptr, rust_vec_len, data_len),
+        6 => wire__crate__api__document_cover_impl(port, ptr, rust_vec_len, data_len),
+        7 => wire__crate__api__document_history_impl(port, ptr, rust_vec_len, data_len),
+        8 => wire__crate__api__open_document_impl(port, ptr, rust_vec_len, data_len),
+        9 => wire__crate__api__page_annotations_impl(port, ptr, rust_vec_len, data_len),
+        10 => wire__crate__api__prepare_external_export_impl(port, ptr, rust_vec_len, data_len),
+        11 => wire__crate__api__project_catalog_impl(port, ptr, rust_vec_len, data_len),
+        12 => wire__crate__api__recognize_page_impl(port, ptr, rust_vec_len, data_len),
+        13 => wire__crate__api__recoverable_documents_impl(port, ptr, rust_vec_len, data_len),
+        14 => wire__crate__api__render_detail_impl(port, ptr, rust_vec_len, data_len),
+        15 => wire__crate__api__render_preview_impl(port, ptr, rust_vec_len, data_len),
+        16 => wire__crate__api__restore_document_impl(port, ptr, rust_vec_len, data_len),
+        17 => wire__crate__api__view_state_impl(port, ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }
@@ -900,7 +973,7 @@ mod io {
     use flutter_rust_bridge::for_generated::byteorder::{
         NativeEndian, ReadBytesExt, WriteBytesExt,
     };
-    use flutter_rust_bridge::for_generated::{transform_result_dco, Lifetimeable, Lockable};
+    use flutter_rust_bridge::for_generated::{Lifetimeable, Lockable, transform_result_dco};
     use flutter_rust_bridge::{Handler, IntoIntoDart};
 
     // Section: boilerplate

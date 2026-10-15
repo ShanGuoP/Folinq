@@ -1,3 +1,4 @@
+import 'history_dialog.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'dart:ui' show AppExitResponse;
@@ -206,7 +207,7 @@ class _WorkbenchState extends ConsumerState<Workbench> {
                             children: [
                               Flexible(
                                 child: Text(
-                                  document?.name ?? '项目 / 历史',
+                                  document?.name ?? '项目与 PDF',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: const TextStyle(
@@ -244,6 +245,17 @@ class _WorkbenchState extends ConsumerState<Workbench> {
                             label: Text(compact ? '打开' : '打开 PDF'),
                           ),
                         ),
+                        if (document != null)
+                          IconButton(
+                            tooltip: '历史版本',
+                            onPressed: state.busy
+                                ? null
+                                : () => showDialog<void>(
+                                    context: context,
+                                    builder: (_) => const HistoryDialog(),
+                                  ),
+                            icon: const Icon(Icons.history, size: 20),
+                          ),
                         const SizedBox(width: 8),
                         TextButton.icon(
                           onPressed: document == null || state.busy

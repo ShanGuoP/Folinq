@@ -76,6 +76,7 @@ dependencies = [
  "anyhow",
  "document-core",
  "flutter_rust_bridge",
+ "image",
  "ocr-engine",
  "pdf-engine",
  "serde",

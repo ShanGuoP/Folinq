@@ -242,6 +242,91 @@ pub fn docx_export(pages: &[PageInfo]) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// Render in page order with annotations. PNG bytes are also used verbatim in
+/// Markdown resources so the two fidelity exports share the same page appearance.
+pub fn layout_pages(bytes: &[u8], pages: &[u16]) -> Result<Vec<Vec<u8>>> {
+    ensure!(!pages.is_empty() && pages.len() <= 1000, "PAGE_LIMIT");
+    with_pdfium(|pdfium| {
+        let document = pdfium.load_pdf_from_byte_slice(bytes, None)?;
+        let mut images = Vec::new();
+        let mut total_bytes = 0usize;
+        for index in pages {
+            let page = document.pages().get(i32::from(*index))?;
+            let image = page
+                .render_with_config(
+                    &PdfRenderConfig::new()
+                        .set_target_width(2400)
+                        .set_maximum_height(4096),
+                )?
+                .as_image()?;
+            let mut buffer = std::io::Cursor::new(Vec::new());
+            image.write_to(&mut buffer, image::ImageFormat::Png)?;
+            let png = buffer.into_inner();
+            total_bytes += png.len();
+            ensure!(total_bytes <= 256 * 1024 * 1024, "EXPORT_SIZE_LIMIT");
+            images.push(png);
+        }
+        Ok(images)
+    })
+}
+
+/// One full-page anchored image per section. Individual sections preserve mixed
+/// portrait/landscape page sizes. Tiny anchor paragraphs cannot add blank pages.
+pub fn layout_docx(pages: &[PageInfo], images: &[Vec<u8>]) -> Result<Vec<u8>> {
+    use docx_rs::*;
+    ensure!(
+        !pages.is_empty() && pages.len() == images.len(),
+        "INVALID_EXPORT_PAGES"
+    );
+    let margin = PageMargin::new()
+        .top(0)
+        .bottom(0)
+        .left(0)
+        .right(0)
+        .header(0)
+        .footer(0);
+    let mut document = Docx::new();
+    for (index, (page, image)) in pages.iter().zip(images).enumerate() {
+        // Word's maximum paper size is 22 inches. Scale oversized PDF pages
+        // proportionally; the visible composition remains unchanged.
+        let scale = (1584. / page.width.max(page.height)).min(1.);
+        let width = (page.width * scale * 20.).round() as u32;
+        let height = (page.height * scale * 20.).round() as u32;
+        let picture = Pic::new(image)
+            .size(width * 635, height * 635)
+            .floating()
+            .position_h(DrawingPosition::Offset(0))
+            .position_v(DrawingPosition::Offset(0))
+            .relative_from_h(RelativeFromHType::Page)
+            .relative_from_v(RelativeFromVType::Page);
+        let paragraph = Paragraph::new()
+            .add_run(Run::new().add_image(picture).size(2))
+            .line_spacing(
+                LineSpacing::new()
+                    .before(0)
+                    .after(0)
+                    .line(1)
+                    .line_rule(LineSpacingType::Exact),
+            );
+        if index + 1 == pages.len() {
+            document = document
+                .add_paragraph(paragraph)
+                .page_size(width, height)
+                .page_margin(margin.clone());
+        } else {
+            document = document.add_section(
+                Section::new()
+                    .page_size(PageSize::new().size(width, height))
+                    .page_margin(margin.clone())
+                    .add_paragraph(paragraph),
+            );
+        }
+    }
+    let mut output = std::io::Cursor::new(Vec::new());
+    document.build().pack(&mut output)?;
+    Ok(output.into_inner())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

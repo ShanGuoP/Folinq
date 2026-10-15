@@ -457,11 +457,15 @@ class DocumentController extends Notifier<DocumentState> {
           _editOptions.remove('${document.id}:${previous.selected?.id}');
         }
       }
-      final preview = await rust.renderPreview(
-        documentId: updated.id,
-        expectedVersion: BigInt.from(updated.version),
-        pageIndex: nextPage,
-      );
+      // Export does not alter the page. Its success must not depend on an
+      // unrelated preview refresh after the output has already been published.
+      final preview = (command == 'export' || command == 'redact_export')
+          ? previous.preview
+          : await rust.renderPreview(
+              documentId: updated.id,
+              expectedVersion: BigInt.from(updated.version),
+              pageIndex: nextPage,
+            );
       state = DocumentState(
         document: updated,
         page: nextPage,
@@ -513,6 +517,24 @@ class DocumentController extends Notifier<DocumentState> {
     if (state.document?.id == id) {
       state = _views.values.lastOrNull ?? const DocumentState();
     }
+  }
+
+  final _coverCache = <String, Future<String>>{};
+  Future<String> documentCover(String id, int version) =>
+      _coverCache.putIfAbsent('$id:$version', () async {
+        final directory = await applicationSupportDirectory();
+        return rust.documentCover(
+          workspace: '${directory.path}/documents',
+          documentId: id,
+        );
+      });
+
+  Future<List<Map<String, dynamic>>> historyVersions() async {
+    final document = state.document;
+    if (document == null) return [];
+    final result =
+        jsonDecode(await rust.documentHistory(documentId: document.id)) as List;
+    return result.map((v) => Map<String, dynamic>.from(v as Map)).toList();
   }
 
   Future<List<DocumentInfo>> recoverable() async {

@@ -655,9 +655,9 @@ class _DocumentToolStripState extends ConsumerState<DocumentToolStrip> {
                 itemBuilder: (_) => [
                   for (final item in [
                     ('pdf', 'PDF / 拆分'),
-                    ('md', 'Markdown（文本）'),
+                    ('md', 'Markdown'),
                     ('txt', '纯文本 TXT'),
-                    ('docx', 'Word DOCX（可编辑文本）'),
+                    ('docx', 'Word DOCX'),
                     ('png', 'PNG 图片 / 批量'),
                     ('jpg', 'JPG 图片 / 批量'),
                   ])

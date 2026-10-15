@@ -143,6 +143,18 @@ pub fn document_command(
                 &options,
             )?;
         }
+        "restore_version" => {
+            let request: serde_json::Value = serde_json::from_str(&value)?;
+            session.restore_version(
+                expected_version,
+                request["session_id"]
+                    .as_str()
+                    .context("INVALID_DOCUMENT_ID")?,
+                request["version"]
+                    .as_u64()
+                    .context("INVALID_HISTORY_VERSION")?,
+            )?;
+        }
         "page_operation" => {
             session.page_operation(expected_version, serde_json::from_str(&value)?)?
         }
@@ -261,6 +273,23 @@ pub fn recognize_page(
     Ok(json)
 }
 
+/// Render a library cover without opening a new editor tab.
+pub fn document_cover(workspace: String, document_id: String) -> Result<String> {
+    let session = Session::recover(Path::new(&workspace), &document_id)?;
+    session.detail_preview(session.info.version, 0, 512)
+}
+
+pub fn document_history(document_id: String) -> Result<String> {
+    let sessions = sessions()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
+    Ok(sessions
+        .get(&document_id)
+        .context("DOCUMENT_CLOSED")?
+        .history()?
+        .to_string())
+}
+
 pub fn recoverable_documents(workspace: String) -> Result<String> {
     Ok(serde_json::to_string(&Session::recoverable(Path::new(
         &workspace,
@@ -289,6 +318,21 @@ pub fn project_catalog(workspace: String, command: String, value: String) -> Res
         if let Some(project) = request["project_id"].as_str() {
             uuid::Uuid::parse_str(project)?;
         }
+    }
+    if command == "assign" {
+        let records = Session::recoverable(root)?;
+        let target = records
+            .iter()
+            .find(|d| Some(d.id.as_str()) == request["document_id"].as_str())
+            .context("DOCUMENT_NOT_FOUND")?;
+        request["document_ids"] = serde_json::json!(
+            records
+                .iter()
+                .filter(|d| Session::source_key(&d.source_path)
+                    == Session::source_key(&target.source_path))
+                .map(|d| d.id.clone())
+                .collect::<Vec<_>>()
+        );
     }
     storage::Projects::open(&root.join("projects.sqlite"))?.command(&command, &request)
 }

@@ -26,3 +26,5 @@ flutter_rust_bridge = "=2.11.1"
 
 [dev-dependencies]
 zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }
+
+image = { version = "=0.25.10", default-features = false, features = ["png"] }

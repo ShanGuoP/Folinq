@@ -35,6 +35,8 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
   bool split = false, running = false, cancelled = false;
   int completed = 0, total = 0;
   String? message;
+  bool succeeded = false;
+  String mode = 'layout';
   @override
   void dispose() {
     range.dispose();
@@ -45,6 +47,12 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
     final controller = ref.read(documentProvider.notifier);
     final snapshot = ref.read(documentProvider);
     if (snapshot.document == null || snapshot.busy) return;
+    setState(() {
+      completed = 0;
+      total = 0;
+      message = null;
+      succeeded = false;
+    });
     try {
       final pages = parsePageRange(range.text, snapshot.document!.pages.length);
       final perPage = split || ['png', 'jpg'].contains(widget.format);
@@ -86,6 +94,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         total = jobs.length;
         cancelled = false;
         message = null;
+        succeeded = false;
       });
       if (!await controller.applyPendingDrafts()) {
         throw FormatException(ref.read(documentProvider).error ?? '草稿提交失败');
@@ -101,6 +110,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
           'export',
           value: jsonEncode({
             'format': widget.format,
+            'mode': mode,
             'pages': jobs[i],
             'destination': paths[i],
           }),
@@ -112,9 +122,11 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         await Future<void>.delayed(Duration.zero);
       }
       if (mounted) {
-        setState(
-          () => message = '${cancelled ? '已停止' : '导出完成'}，已保存 $completed 个文件。',
-        );
+        setState(() {
+          succeeded = completed == total;
+          message =
+              '${succeeded ? '导出成功' : '已停止导出'}，已保存 $completed 个文件。\n保存位置：$destination';
+        });
       }
     } catch (failure) {
       if (mounted) {
@@ -132,51 +144,84 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
   Widget build(BuildContext context) => PopScope(
     canPop: !running,
     child: AlertDialog(
-      title: Text('导出 ${widget.format.toUpperCase()}'),
+      title: Row(
+        children: [
+          if (succeeded) ...[
+            const Icon(Icons.check_circle, color: Color(0xff348263)),
+            const SizedBox(width: 10),
+          ],
+          Text(succeeded ? '导出成功' : '导出 ${widget.format.toUpperCase()}'),
+        ],
+      ),
       content: SizedBox(
         width: 430,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            TextField(
-              controller: range,
-              enabled: !running,
-              decoration: const InputDecoration(
-                labelText: '页面范围',
-                hintText: '留空为全部，例如 1-3,5',
-              ),
-            ),
-            const SizedBox(height: 12),
-            if (!['png', 'jpg'].contains(widget.format))
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('按页拆分为独立文件'),
-                value: split,
-                onChanged: running
-                    ? null
-                    : (value) => setState(() => split = value!),
-              )
-            else
-              const Text('每页输出一张图片，保存到所选文件夹。'),
-            const SizedBox(height: 12),
-            const Text(
-              '文字格式保留可编辑内容；复杂表格、多栏和公式的布局可能变化。',
-              style: TextStyle(fontSize: 12),
-            ),
-            if (running) ...[
-              const SizedBox(height: 16),
-              LinearProgressIndicator(
-                value: total == 0 ? null : completed / total,
-              ),
-              Text('$completed / $total'),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (!succeeded) ...[
+                TextField(
+                  controller: range,
+                  enabled: !running && !succeeded,
+                  decoration: const InputDecoration(
+                    labelText: '页面范围',
+                    hintText: '留空为全部，例如 1-3,5',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                if (!['png', 'jpg'].contains(widget.format))
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('按页拆分为独立文件'),
+                    value: split,
+                    onChanged: running || succeeded
+                        ? null
+                        : (value) => setState(() => split = value!),
+                  )
+                else
+                  const Text('每页输出一张图片，保存到所选文件夹。'),
+                const SizedBox(height: 12),
+                if (['docx', 'md'].contains(widget.format)) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: mode,
+                    decoration: const InputDecoration(labelText: '导出方式'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'layout',
+                        child: Text('保留原版式（推荐）'),
+                      ),
+                      DropdownMenuItem(value: 'text', child: Text('提取可编辑文字')),
+                    ],
+                    onChanged: running || succeeded
+                        ? null
+                        : (value) => setState(() => mode = value!),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    mode == 'layout'
+                        ? (widget.format == 'md'
+                              ? '每页保存为高清图片，保留表格、图片和文字外观。请将 Markdown 与配套资源文件夹一起移动。'
+                              : '每页以高清图片嵌入 Word，保留表格、图片和文字外观；页内文字与表格不能单独编辑。')
+                        : '只提取可编辑文字，不保留图片、表格结构和原始排版。需要完整外观请选择“保留原版式”。',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ],
+              if (running) ...[
+                const SizedBox(height: 16),
+                LinearProgressIndicator(
+                  value: total == 0 ? null : completed / total,
+                ),
+                Text('$completed / $total'),
+              ],
+              if (message != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: SelectableText(message!),
+                ),
             ],
-            if (message != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: SelectableText(message!),
-              ),
-          ],
+          ),
         ),
       ),
       actions: [
@@ -187,8 +232,10 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
           child: Text(running ? '完成当前文件后停止' : '关闭'),
         ),
         FilledButton(
-          onPressed: running ? null : export,
-          child: const Text('选择位置并导出'),
+          onPressed: running
+              ? null
+              : (succeeded ? () => Navigator.pop(context) : export),
+          child: Text(succeeded ? '完成' : '选择位置并导出'),
         ),
       ],
     ),

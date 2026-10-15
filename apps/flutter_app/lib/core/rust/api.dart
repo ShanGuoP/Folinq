@@ -67,6 +67,18 @@ Future<String> recognizePage({
   language: language,
 );
 
+/// Render a library cover without opening a new editor tab.
+Future<String> documentCover({
+  required String workspace,
+  required String documentId,
+}) => RustLib.instance.api.crateApiDocumentCover(
+  workspace: workspace,
+  documentId: documentId,
+);
+
+Future<String> documentHistory({required String documentId}) =>
+    RustLib.instance.api.crateApiDocumentHistory(documentId: documentId);
+
 Future<String> recoverableDocuments({required String workspace}) =>
     RustLib.instance.api.crateApiRecoverableDocuments(workspace: workspace);
 

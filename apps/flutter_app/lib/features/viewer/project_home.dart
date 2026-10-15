@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,17 +7,36 @@ import '../../shared/editor_theme.dart';
 import '../documents/document_controller.dart';
 import 'document_tools.dart';
 
+String _sourceKey(DocumentInfo document) => document.source
+    .replaceAll('\\', '/')
+    .replaceFirst(RegExp(r'^//\?/'), '')
+    .toLowerCase();
+
 class _HomeData {
-  _HomeData(this.documents, Map<String, dynamic> catalog)
-    : projects = List<Map<String, dynamic>>.from(
-        (catalog['projects'] as List).map(
-          (p) => Map<String, dynamic>.from(p as Map),
-        ),
+  _HomeData(List<DocumentInfo> all, Map<String, dynamic> catalog) {
+    projects = List<Map<String, dynamic>>.from(
+      (catalog['projects'] as List).map(
+        (p) => Map<String, dynamic>.from(p as Map),
       ),
-      memberships = Map<String, dynamic>.from(catalog['memberships'] as Map);
-  final List<DocumentInfo> documents;
-  final List<Map<String, dynamic>> projects;
-  final Map<String, dynamic> memberships;
+    );
+    final membershipsById = Map<String, dynamic>.from(
+      catalog['memberships'] as Map,
+    );
+    final bySource = <String, DocumentInfo>{};
+    final groups = <String, dynamic>{};
+    for (final document in all) {
+      final key = _sourceKey(document);
+      bySource.putIfAbsent(key, () => document);
+      if (membershipsById[document.id] != null) {
+        groups.putIfAbsent(key, () => membershipsById[document.id]);
+      }
+    }
+    documents = bySource.values.toList();
+    memberships = {for (final d in documents) d.id: groups[_sourceKey(d)]};
+  }
+  late final List<DocumentInfo> documents;
+  late final List<Map<String, dynamic>> projects;
+  late final Map<String, dynamic> memberships;
 }
 
 class ProjectHome extends ConsumerStatefulWidget {
@@ -35,7 +55,11 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
   Future<_HomeData> load() async {
     final controller = ref.read(documentProvider.notifier);
     final documents = await controller.recoverable();
-    return _HomeData(documents, await controller.projects());
+    final current = ref.read(documentProvider).document;
+    return _HomeData([
+      if (current != null && documents.any((d) => d.id == current.id)) current,
+      ...documents,
+    ], await controller.projects());
   }
 
   Future<void> change(String command, Map<String, dynamic> value) async {
@@ -138,22 +162,30 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
   Widget build(BuildContext context) {
     final disabled = busy || ref.watch(documentProvider).busy;
     return Padding(
-      padding: const EdgeInsets.all(28),
+      padding: const EdgeInsets.all(24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            '项目与 PDF',
-            style: TextStyle(fontSize: 24, fontWeight: FontWeight.w600),
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '最近的文档',
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                ),
+              ),
+              IconButton(
+                tooltip: '刷新',
+                onPressed: disabled
+                    ? null
+                    : () => setState(() => history = load()),
+                icon: const Icon(Icons.refresh),
+              ),
+            ],
           ),
-          const SizedBox(height: 8),
-          const Text(
-            '用项目归组多份文档，也可以直接管理独立 PDF。',
-            style: TextStyle(color: EditorColors.secondary),
-          ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           Wrap(
-            spacing: 12,
+            spacing: 10,
             runSpacing: 8,
             children: [
               FilledButton.icon(
@@ -168,16 +200,9 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
               ),
               const NewDocumentButton(),
               const ImportDocumentButton(),
-              TextButton.icon(
-                onPressed: disabled
-                    ? null
-                    : () => setState(() => history = load()),
-                icon: const Icon(Icons.refresh),
-                label: const Text('刷新'),
-              ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 18),
           TextField(
             decoration: const InputDecoration(
               prefixIcon: Icon(Icons.search),
@@ -190,7 +215,7 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
               padding: const EdgeInsets.only(top: 8),
               child: SelectableText(error!),
             ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 20),
           Expanded(
             child: FutureBuilder<_HomeData>(
               future: history,
@@ -205,17 +230,21 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
                 final project = data.projects
                     .where((p) => p['id'] == activeProject)
                     .firstOrNull;
-                final projects = data.projects
-                    .where(
-                      (p) =>
-                          (p['name'] as String).toLowerCase().contains(query) ||
-                          data.documents.any(
-                            (d) =>
-                                data.memberships[d.id] == p['id'] &&
-                                d.name.toLowerCase().contains(query),
-                          ),
-                    )
-                    .toList();
+                final projects = project == null
+                    ? data.projects
+                          .where(
+                            (p) =>
+                                (p['name'] as String).toLowerCase().contains(
+                                  query,
+                                ) ||
+                                data.documents.any(
+                                  (d) =>
+                                      data.memberships[d.id] == p['id'] &&
+                                      d.name.toLowerCase().contains(query),
+                                ),
+                          )
+                          .toList()
+                    : <Map<String, dynamic>>[];
                 final documents = data.documents
                     .where(
                       (d) =>
@@ -225,233 +254,235 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
                           d.name.toLowerCase().contains(query),
                     )
                     .toList();
-                return CustomScrollView(
-                  slivers: [
-                    if (project == null) ...[
-                      const SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.only(bottom: 12),
-                          child: Text(
-                            '项目',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 15,
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (project != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 12),
+                        child: Row(
+                          children: [
+                            TextButton.icon(
+                              onPressed: () =>
+                                  setState(() => activeProject = null),
+                              icon: const Icon(Icons.arrow_back, size: 16),
+                              label: const Text('全部项目'),
                             ),
-                          ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                project['name'] as String,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            TextButton.icon(
+                              onPressed: disabled ? null : addPdf,
+                              icon: const Icon(Icons.add, size: 16),
+                              label: const Text('添加 PDF 到项目'),
+                            ),
+                          ],
                         ),
                       ),
-                      if (projects.isEmpty)
-                        const SliverToBoxAdapter(
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(vertical: 20),
-                            child: Text(
-                              '还没有项目，点击“新建项目”创建。',
-                              style: TextStyle(color: EditorColors.muted),
-                            ),
-                          ),
-                        )
-                      else
-                        SliverGrid(
-                          gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
-                                maxCrossAxisExtent: 340,
-                                mainAxisExtent: 132,
-                                crossAxisSpacing: 12,
-                                mainAxisSpacing: 12,
+                    Expanded(
+                      child: projects.isEmpty && documents.isEmpty
+                          ? Center(
+                              child: Text(
+                                project == null
+                                    ? '打开 PDF 或新建项目，开始整理文档。'
+                                    : '项目中还没有 PDF。可以添加文件，或把独立 PDF 移入项目。',
+                                style: const TextStyle(
+                                  color: EditorColors.muted,
+                                ),
                               ),
-                          delegate: SliverChildBuilderDelegate((
-                            context,
-                            index,
-                          ) {
-                            final p = projects[index];
-                            final count = data.documents
-                                .where((d) => data.memberships[d.id] == p['id'])
-                                .length;
-                            return Material(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              child: InkWell(
-                                borderRadius: BorderRadius.circular(12),
-                                onTap: disabled
-                                    ? null
-                                    : () => setState(
-                                        () => activeProject = p['id'] as String,
+                            )
+                          : LayoutBuilder(
+                              builder: (context, constraints) {
+                                final columns = (constraints.maxWidth / 190)
+                                    .floor()
+                                    .clamp(1, 12);
+                                return GridView.builder(
+                                  gridDelegate:
+                                      SliverGridDelegateWithFixedCrossAxisCount(
+                                        crossAxisCount: columns,
+                                        mainAxisExtent: 252,
+                                        crossAxisSpacing: 18,
+                                        mainAxisSpacing: 20,
                                       ),
-                                child: Padding(
-                                  padding: const EdgeInsets.all(16),
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Row(
-                                        children: [
-                                          const Icon(
-                                            Icons.folder_outlined,
-                                            size: 22,
-                                          ),
-                                          const Spacer(),
-                                          PopupMenuButton<String>(
-                                            tooltip: '项目操作',
-                                            enabled: !disabled,
-                                            onSelected: (action) =>
-                                                action == 'rename'
-                                                ? nameProject(p)
-                                                : deleteProject(p),
-                                            itemBuilder: (_) => const [
-                                              PopupMenuItem(
-                                                value: 'rename',
-                                                child: Text('重命名'),
+                                  itemCount: projects.length + documents.length,
+                                  itemBuilder: (context, index) {
+                                    if (index < projects.length) {
+                                      final p = projects[index];
+                                      final members = data.documents
+                                          .where(
+                                            (d) =>
+                                                data.memberships[d.id] ==
+                                                p['id'],
+                                          )
+                                          .toList();
+                                      return _LibraryCard(
+                                        title: p['name'] as String,
+                                        subtitle: '${members.length} 份 PDF',
+                                        onTap: disabled
+                                            ? null
+                                            : () => setState(
+                                                () => activeProject =
+                                                    p['id'] as String,
                                               ),
-                                              PopupMenuItem(
-                                                value: 'delete',
-                                                child: Text('删除分组'),
-                                              ),
+                                        cover: Padding(
+                                          padding: const EdgeInsets.all(12),
+                                          child: Column(
+                                            children: [
+                                              for (
+                                                var row = 0;
+                                                row < 2;
+                                                row++
+                                              ) ...[
+                                                if (row > 0)
+                                                  const SizedBox(height: 8),
+                                                Expanded(
+                                                  child: Row(
+                                                    crossAxisAlignment:
+                                                        CrossAxisAlignment
+                                                            .stretch,
+                                                    children: [
+                                                      for (
+                                                        var col = 0;
+                                                        col < 2;
+                                                        col++
+                                                      ) ...[
+                                                        if (col > 0)
+                                                          const SizedBox(
+                                                            width: 8,
+                                                          ),
+                                                        Expanded(
+                                                          child:
+                                                              row * 2 + col <
+                                                                  members.length
+                                                              ? _DocumentCover(
+                                                                  key: ValueKey(
+                                                                    'cover-${members[row * 2 + col].id}-${members[row * 2 + col].version}',
+                                                                  ),
+                                                                  document:
+                                                                      members[row *
+                                                                              2 +
+                                                                          col],
+                                                                )
+                                                              : Container(
+                                                                  decoration: BoxDecoration(
+                                                                    color: const Color(
+                                                                      0xffe9e9ee,
+                                                                    ),
+                                                                    borderRadius:
+                                                                        BorderRadius.circular(
+                                                                          4,
+                                                                        ),
+                                                                  ),
+                                                                  child: const Icon(
+                                                                    Icons
+                                                                        .description_outlined,
+                                                                    color: Color(
+                                                                      0xffcdced5,
+                                                                    ),
+                                                                    size: 24,
+                                                                  ),
+                                                                ),
+                                                        ),
+                                                      ],
+                                                    ],
+                                                  ),
+                                                ),
+                                              ],
                                             ],
                                           ),
+                                        ),
+                                        menu: PopupMenuButton<String>(
+                                          tooltip: '项目操作',
+                                          enabled: !disabled,
+                                          onSelected: (action) =>
+                                              action == 'rename'
+                                              ? nameProject(p)
+                                              : deleteProject(p),
+                                          itemBuilder: (_) => const [
+                                            PopupMenuItem(
+                                              value: 'rename',
+                                              child: Text('重命名'),
+                                            ),
+                                            PopupMenuItem(
+                                              value: 'delete',
+                                              child: Text('删除分组'),
+                                            ),
+                                          ],
+                                        ),
+                                      );
+                                    }
+                                    final document =
+                                        documents[index - projects.length];
+                                    return _LibraryCard(
+                                      key: ValueKey(
+                                        'home-document-${document.id}',
+                                      ),
+                                      title: document.name,
+                                      subtitle:
+                                          '${document.pages.length} 页${document.dirty ? ' · 有未保存修改' : ''}',
+                                      cover: Padding(
+                                        padding: const EdgeInsets.all(14),
+                                        child: _DocumentCover(
+                                          key: ValueKey(
+                                            'cover-${document.id}-${document.version}',
+                                          ),
+                                          document: document,
+                                        ),
+                                      ),
+                                      onTap: disabled
+                                          ? null
+                                          : () async {
+                                              await ref
+                                                  .read(
+                                                    documentProvider.notifier,
+                                                  )
+                                                  .restore(document.id);
+                                              if (mounted &&
+                                                  ref
+                                                          .read(
+                                                            documentProvider,
+                                                          )
+                                                          .error ==
+                                                      null) {
+                                                widget.onEnter();
+                                              }
+                                            },
+                                      menu: PopupMenuButton<String>(
+                                        tooltip: '归组 PDF',
+                                        enabled: !disabled,
+                                        onSelected: (project) =>
+                                            change('assign', {
+                                              'document_id': document.id,
+                                              'project_id':
+                                                  project == 'standalone'
+                                                  ? null
+                                                  : project,
+                                            }),
+                                        itemBuilder: (_) => [
+                                          const PopupMenuItem(
+                                            value: 'standalone',
+                                            child: Text('移为独立 PDF'),
+                                          ),
+                                          for (final p in data.projects)
+                                            PopupMenuItem(
+                                              value: p['id'] as String,
+                                              child: Text('移入 ${p['name']}'),
+                                            ),
                                         ],
                                       ),
-                                      Text(
-                                        p['name'] as String,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                          fontWeight: FontWeight.w500,
-                                        ),
-                                      ),
-                                      Text(
-                                        '$count 份 PDF',
-                                        style: const TextStyle(
-                                          color: EditorColors.muted,
-                                          fontSize: 11,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                            );
-                          }, childCount: projects.length),
-                        ),
-                      const SliverToBoxAdapter(
-                        child: Padding(
-                          padding: EdgeInsets.only(top: 24, bottom: 12),
-                          child: Text(
-                            '独立 PDF',
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 15,
+                                    );
+                                  },
+                                );
+                              },
                             ),
-                          ),
-                        ),
-                      ),
-                    ] else
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Row(
-                            children: [
-                              TextButton.icon(
-                                onPressed: () =>
-                                    setState(() => activeProject = null),
-                                icon: const Icon(Icons.arrow_back, size: 16),
-                                label: const Text('全部项目'),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Text(
-                                  project['name'] as String,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ),
-                              TextButton.icon(
-                                onPressed: disabled ? null : addPdf,
-                                icon: const Icon(Icons.add, size: 16),
-                                label: const Text('添加 PDF 到项目'),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    if (documents.isEmpty)
-                      SliverToBoxAdapter(
-                        child: Padding(
-                          padding: const EdgeInsets.all(20),
-                          child: Text(
-                            project == null
-                                ? '独立打开的 PDF 会显示在这里。'
-                                : '项目中还没有 PDF。可以添加文件，或把独立 PDF 移入项目。',
-                            style: const TextStyle(color: EditorColors.muted),
-                          ),
-                        ),
-                      )
-                    else
-                      SliverList(
-                        delegate: SliverChildBuilderDelegate((context, index) {
-                          final document = documents[index];
-                          return Padding(
-                            padding: const EdgeInsets.only(bottom: 10),
-                            child: Material(
-                              color: Colors.white,
-                              borderRadius: BorderRadius.circular(12),
-                              child: ListTile(
-                                key: ValueKey('home-document-${document.id}'),
-                                contentPadding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 8,
-                                ),
-                                leading: const Icon(
-                                  Icons.picture_as_pdf_outlined,
-                                ),
-                                title: Text(
-                                  document.name,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                ),
-                                subtitle: Text(
-                                  '${document.pages.length} 页 · 版本 ${document.version} · ${document.dirty ? '有未保存修改' : '已保存'}',
-                                  style: const TextStyle(fontSize: 12),
-                                ),
-                                trailing: PopupMenuButton<String>(
-                                  tooltip: '归组 PDF',
-                                  enabled: !disabled,
-                                  onSelected: (project) => change('assign', {
-                                    'document_id': document.id,
-                                    'project_id': project == 'standalone'
-                                        ? null
-                                        : project,
-                                  }),
-                                  itemBuilder: (_) => [
-                                    const PopupMenuItem(
-                                      value: 'standalone',
-                                      child: Text('移为独立 PDF'),
-                                    ),
-                                    for (final p in data.projects)
-                                      PopupMenuItem(
-                                        value: p['id'] as String,
-                                        child: Text('移入 ${p['name']}'),
-                                      ),
-                                  ],
-                                ),
-                                onTap: disabled
-                                    ? null
-                                    : () async {
-                                        await ref
-                                            .read(documentProvider.notifier)
-                                            .restore(document.id);
-                                        if (mounted &&
-                                            ref.read(documentProvider).error ==
-                                                null) {
-                                          widget.onEnter();
-                                        }
-                                      },
-                              ),
-                            ),
-                          );
-                        }, childCount: documents.length),
-                      ),
+                    ),
                   ],
                 );
               },
@@ -461,4 +492,111 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
       ),
     );
   }
+}
+
+class _LibraryCard extends StatelessWidget {
+  const _LibraryCard({
+    super.key,
+    required this.title,
+    required this.subtitle,
+    required this.cover,
+    required this.menu,
+    this.onTap,
+  });
+  final String title, subtitle;
+  final Widget cover, menu;
+  final VoidCallback? onTap;
+  @override
+  Widget build(BuildContext context) => Material(
+    color: Colors.transparent,
+    borderRadius: BorderRadius.circular(10),
+    child: InkWell(
+      borderRadius: BorderRadius.circular(10),
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              decoration: BoxDecoration(
+                color: const Color(0xfff8f8fa),
+                border: Border.all(color: const Color(0xffe2e3e9)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: cover,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Tooltip(
+                        message: title,
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: EditorColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(width: 32, height: 44, child: menu),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _DocumentCover extends ConsumerStatefulWidget {
+  const _DocumentCover({super.key, required this.document});
+  final DocumentInfo document;
+  @override
+  ConsumerState<_DocumentCover> createState() => _DocumentCoverState();
+}
+
+class _DocumentCoverState extends ConsumerState<_DocumentCover> {
+  late final Future<String> path = ref
+      .read(documentProvider.notifier)
+      .documentCover(widget.document.id, widget.document.version);
+  @override
+  Widget build(BuildContext context) => FutureBuilder<String>(
+    future: path,
+    builder: (context, snapshot) => snapshot.hasData
+        ? Image.file(
+            File(snapshot.data!),
+            fit: BoxFit.contain,
+            errorBuilder: (_, error, stack) => const Icon(
+              Icons.picture_as_pdf_outlined,
+              color: EditorColors.muted,
+            ),
+          )
+        : const Center(
+            child: Icon(
+              Icons.description_outlined,
+              color: EditorColors.muted,
+              size: 32,
+            ),
+          ),
+  );
 }

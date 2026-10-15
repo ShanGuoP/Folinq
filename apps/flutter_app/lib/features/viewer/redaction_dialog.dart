@@ -55,7 +55,8 @@ class _RedactionDialogState extends ConsumerState<RedactionDialog> {
     setState(() {
       busy = false;
       message =
-          ref.read(documentProvider).error ?? '脱敏副本已保存。整份输出均为图片页面，不包含原文字层或附件。';
+          ref.read(documentProvider).error ??
+          '导出成功：脱敏副本已保存。\n保存位置：$destination\n整份输出均为图片页面，不包含原文字层或附件。';
     });
   }
 

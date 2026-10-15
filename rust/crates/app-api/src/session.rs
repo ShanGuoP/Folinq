@@ -182,19 +182,127 @@ impl Session {
         let mut results = Vec::new();
         for entry in fs::read_dir(workspace)?.take(1000).flatten() {
             let path = entry.path().join("recovery.json");
-            if let Ok(bytes) = fs::read(path)
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if Uuid::parse_str(&name).is_err() || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            if let Ok(bytes) = fs::read(&path)
                 && let Ok(record) = serde_json::from_slice::<serde_json::Value>(&bytes)
                 && let Ok(info) = serde_json::from_value::<DocumentInfo>(record["info"].clone())
             {
-                results.push(info);
+                if info.id != name {
+                    continue;
+                }
+                results.push((
+                    fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::UNIX_EPOCH),
+                    info,
+                ));
             }
         }
-        results.sort_by(|a, b| {
-            b.dirty
-                .cmp(&a.dirty)
-                .then_with(|| b.version.cmp(&a.version))
+        results.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.id.cmp(&b.1.id)));
+        Ok(results.into_iter().map(|(_, info)| info).collect())
+    }
+
+    pub fn source_key(source: &str) -> String {
+        let normalized = source.replace('\\', "/");
+        let normalized = normalized.trim_start_matches("//?/");
+        if cfg!(windows) {
+            normalized.to_lowercase()
+        } else {
+            normalized.to_owned()
+        }
+    }
+
+    pub fn history(&self) -> Result<serde_json::Value> {
+        let workspace = self.directory.parent().context("INVALID_WORKSPACE")?;
+        let source = Self::source_key(&self.info.source_path);
+        let mut records = Vec::new();
+        for info in Self::recoverable(workspace)?
+            .into_iter()
+            .filter(|info| Self::source_key(&info.source_path) == source)
+        {
+            let directory = workspace.join(&info.id);
+            for entry in fs::read_dir(directory)?.take(10000).flatten() {
+                let path = entry.path();
+                let Some(version) = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.strip_prefix("version-"))
+                    .and_then(|s| s.strip_suffix(".json"))
+                    .and_then(|s| s.parse::<u64>().ok())
+                else {
+                    continue;
+                };
+                // An incomplete/failed future commit is never a usable version.
+                if version > info.version || !path.with_extension("pdf").is_file() {
+                    continue;
+                }
+                let metadata = fs::metadata(&path)?;
+                let time = metadata
+                    .modified()?
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                records.push(
+                    serde_json::json!({"session_id":info.id,"version":version,"time":time,
+                    "current": info.id == self.info.id && version == self.info.version}),
+                );
+            }
+        }
+        records.sort_by(|a, b| {
+            b["time"]
+                .as_u64()
+                .cmp(&a["time"].as_u64())
+                .then_with(|| b["version"].as_u64().cmp(&a["version"].as_u64()))
         });
-        Ok(results)
+        Ok(serde_json::Value::Array(records))
+    }
+
+    pub fn restore_version(&mut self, expected: u64, session_id: &str, version: u64) -> Result<()> {
+        check_version(self.info.version, expected)?;
+        let root = self
+            .directory
+            .parent()
+            .context("INVALID_WORKSPACE")?
+            .canonicalize()?;
+        Uuid::parse_str(session_id).context("INVALID_DOCUMENT_ID")?;
+        let directory = root.join(session_id).canonicalize()?;
+        ensure!(
+            directory.parent() == Some(root.as_path()),
+            "INVALID_RECOVERY_PATH"
+        );
+        let record: serde_json::Value =
+            serde_json::from_slice(&fs::read(directory.join("recovery.json"))?)?;
+        let current: DocumentInfo = serde_json::from_value(record["info"].clone())?;
+        ensure!(
+            current.id == session_id
+                && version <= current.version
+                && Self::source_key(&current.source_path)
+                    == Self::source_key(&self.info.source_path),
+            "INVALID_HISTORY_VERSION"
+        );
+        let path = directory
+            .join(format!("version-{version}.pdf"))
+            .canonicalize()?;
+        ensure!(
+            path.parent() == Some(directory.as_path()),
+            "INVALID_RECOVERY_PATH"
+        );
+        let template: DocumentInfo =
+            serde_json::from_slice(&fs::read(path.with_extension("json"))?)?;
+        ensure!(
+            template.id == session_id && template.version == version,
+            "INVALID_HISTORY_VERSION"
+        );
+        let bytes = read_pdf(&path)?;
+        let mut undo = self.undo.clone();
+        undo.push(PathBuf::from(&self.info.working_path));
+        if undo.len() > HISTORY_LIMIT {
+            undo.remove(0);
+        }
+        self.commit_with_pages(&bytes, undo, vec![], template.pages)
     }
 
     fn journal(&self, info: &DocumentInfo) -> Result<()> {
@@ -631,6 +739,19 @@ impl Session {
         destination: &Path,
         pages: &[u16],
     ) -> Result<()> {
+        self.export_with_mode(version, format, destination, pages, "layout")
+    }
+
+    pub fn export_with_mode(
+        &self,
+        version: u64,
+        format: &str,
+        destination: &Path,
+        pages: &[u16],
+        mode: &str,
+    ) -> Result<()> {
+        ensure!(matches!(mode, "layout" | "text"), "INVALID_EXPORT_MODE");
+        ensure!(!destination.exists(), "DESTINATION_EXISTS_OR_UNWRITABLE");
         check_version(self.info.version, version)?;
         let selected: Vec<PageInfo> = if pages.is_empty() {
             self.info.pages.clone()
@@ -646,6 +767,48 @@ impl Session {
                 })
                 .collect::<Result<_>>()?
         };
+        if matches!(format, "docx" | "md") && mode == "layout" {
+            let images = pdf_engine::conversion::layout_pages(
+                &self.bytes()?,
+                &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
+            )?;
+            if format == "docx" {
+                return publish_new(
+                    destination,
+                    &pdf_engine::conversion::layout_docx(&selected, &images)?,
+                );
+            }
+            // Stage all images before publishing the .md. A unique adjacent
+            // directory avoids overwriting existing resources or racing exports.
+            let parent = destination
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let resources = format!("folinq-assets-{}", Uuid::new_v4());
+            let staging = tempfile::Builder::new()
+                .prefix(".folinq-export-")
+                .tempdir_in(parent)?;
+            let mut markdown = String::new();
+            for (page, image) in selected.iter().zip(&images) {
+                let filename = format!("page-{:04}.png", page.index + 1);
+                let mut file = fs::File::create(staging.path().join(&filename))?;
+                file.write_all(image)?;
+                file.sync_all()?;
+                markdown.push_str(&format!(
+                    "## 第 {} 页\n\n![第 {} 页]({resources}/{filename})\n\n",
+                    page.index + 1,
+                    page.index + 1
+                ));
+            }
+            let resource_path = parent.join(&resources);
+            fs::rename(staging.path(), &resource_path)?;
+            if let Err(error) = publish_new(destination, markdown.as_bytes()) {
+                // This path is a freshly created UUID owned by this operation.
+                let _ = fs::remove_dir_all(&resource_path);
+                return Err(error);
+            }
+            return Ok(());
+        }
         let bytes = match format {
             "txt" => pdf_engine::conversion::text_export(&selected, false).into_bytes(),
             "md" => pdf_engine::conversion::text_export(&selected, true).into_bytes(),
@@ -718,12 +881,139 @@ fn reconcile(pages: &mut [PageInfo], template: &[PageInfo]) {
 mod tests {
     use super::*;
     #[test]
+    fn fidelity_exports_include_every_page_and_history_restore_is_undoable() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source.pdf");
+        let original = pdf_engine::create_fixture()?;
+        fs::write(&source, &original)?;
+        let workspace = temp.path().join("sessions");
+        let mut session = Session::open(&source, &workspace)?;
+        session.page_operation(0, PageOperation::Insert { at: 1 })?;
+        session.page_operation(
+            1,
+            PageOperation::Rotate {
+                page: 1,
+                clockwise: true,
+            },
+        )?;
+        let image_path = temp.path().join("image.png");
+        image::RgbImage::from_fn(90, 50, |x, y| {
+            image::Rgb([(x * 2) as u8, (y * 4) as u8, 140])
+        })
+        .save(&image_path)?;
+        session.object_operation(
+            2,
+            ObjectOperation::InsertImage {
+                page: 0,
+                path: image_path.to_string_lossy().into(),
+                x: 50.,
+                y: 400.,
+                width: 180.,
+                height: 100.,
+            },
+        )?;
+        let mut grid = Vec::new();
+        for p in [0., 0.5, 1.] {
+            grid.push(vec![[p, 0.], [p, 1.]]);
+            grid.push(vec![[0., p], [1., p]]);
+        }
+        session.object_operation(
+            3,
+            ObjectOperation::Ink {
+                page: 0,
+                strokes: grid,
+            },
+        )?;
+        let v = session.info.version;
+        assert_eq!(session.info.pages[0].image_objects.len(), 1);
+        assert!(session.info.pages[1].width > session.info.pages[1].height);
+        let before = session.bytes()?;
+        let expected_images = pdf_engine::conversion::layout_pages(&before, &[1, 0])?;
+        let word = temp.path().join("mixed.docx");
+        session.export(v, "docx", &word, &[1, 0])?;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(fs::read(&word)?))?;
+        let mut xml = String::new();
+        archive
+            .by_name("word/document.xml")?
+            .read_to_string(&mut xml)?;
+        assert_eq!(xml.matches("<wp:anchor").count(), 2);
+        assert_eq!(xml.matches("<w:sectPr>").count(), 2);
+        assert!(xml.contains("relativeFrom=\"page\""));
+        let media_names = archive
+            .file_names()
+            .filter(|name| name.starts_with("word/media/") && !name.ends_with('/'))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        assert_eq!(media_names.len(), 2);
+        for name in media_names {
+            let mut png = Vec::new();
+            archive.by_name(&name)?.read_to_end(&mut png)?;
+            let image = image::load_from_memory(&png)?;
+            // docx-rs re-encodes PNG; compare pixels rather than PNG compression.
+            assert!(expected_images.iter().any(|expected| {
+                image::load_from_memory(expected).unwrap().to_rgba8() == image.to_rgba8()
+            }));
+        }
+        let markdown = temp.path().join("document with spaces.md");
+        session.export(v, "md", &markdown, &[1, 0])?;
+        let md = fs::read_to_string(&markdown)?;
+        assert!(md.find("第 2 页").unwrap() < md.find("第 1 页").unwrap());
+        for (index, link) in md
+            .split("](")
+            .skip(1)
+            .map(|s| s.split(')').next().unwrap())
+            .enumerate()
+        {
+            assert_eq!(fs::read(temp.path().join(link))?, expected_images[index]);
+        }
+        assert!(session.export(v, "md", &markdown, &[]).is_err());
+        assert_eq!(fs::read_to_string(&markdown)?, md);
+        assert!(
+            session
+                .export(v, "md", &temp.path().join("missing/output.md"), &[])
+                .is_err()
+        );
+        assert!(!temp.path().join("missing/output.md").exists());
+        // Another opening of the same PDF remains available through history.
+        let older = Session::open(&source, &workspace)?;
+        let history = session.history()?;
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["session_id"] == older.info.id)
+        );
+        assert!(
+            history
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v["current"] == true)
+        );
+        session.restore_version(v, &older.info.id, 0)?;
+        assert_eq!(session.info.pages.len(), 1);
+        assert_eq!(fs::read(&source)?, original);
+        session.undo(v + 1)?;
+        assert_eq!(session.bytes()?, before);
+        // A foreign PDF and a path traversal cannot be used as a history source.
+        let other_path = temp.path().join("other.pdf");
+        fs::write(&other_path, &original)?;
+        let other = Session::open(&other_path, &workspace)?;
+        assert!(session.restore_version(v + 2, &other.info.id, 0).is_err());
+        assert!(session.restore_version(v + 2, "../outside", 0).is_err());
+        assert_eq!(session.bytes()?, before);
+        Ok(())
+    }
+
+    #[test]
     fn projects_persist_membership_and_deletion_keeps_pdf_independent() -> Result<()> {
         let temp = tempfile::tempdir()?;
         let source = temp.path().join("source.pdf");
         fs::write(&source, pdf_engine::create_fixture()?)?;
         let workspace = temp.path().join("sessions");
         let session = Session::open(&source, &workspace)?;
+        let duplicate = Session::open(&source, &workspace)?;
         let command = |command: &str, value: serde_json::Value| -> Result<serde_json::Value> {
             Ok(serde_json::from_str(&crate::api::project_catalog(
                 workspace.to_string_lossy().into(),
@@ -741,6 +1031,7 @@ mod tests {
         let data = command("list", serde_json::json!({}))?;
         assert_eq!(data["projects"][0]["name"], "Renamed");
         assert_eq!(data["memberships"][&session.info.id], id);
+        assert_eq!(data["memberships"][&duplicate.info.id], id);
         assert!(command("assign",serde_json::json!({"document_id":session.info.id,"project_id":"00000000-0000-0000-0000-000000000000"})).is_err());
         assert_eq!(
             command("list", serde_json::json!({}))?["memberships"][&session.info.id],
@@ -878,7 +1169,7 @@ mod tests {
         restored.redo(4)?;
         assert_eq!(restored.info.pages.len(), 1);
         let output = temp.path().join("output.docx");
-        restored.export(5, "docx", &output, &[])?;
+        restored.export_with_mode(5, "docx", &output, &[], "text")?;
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(fs::read(output)?))?;
         let mut xml = String::new();
         archive
@@ -897,7 +1188,11 @@ mod tests {
                 "png" => assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n")),
                 "jpg" => assert!(bytes.starts_with(&[0xff, 0xd8, 0xff])),
                 "pdf" => assert_eq!(pdf_engine::inspect(&bytes, None)?.len(), 1),
-                _ => assert!(std::str::from_utf8(&bytes)?.contains("Hello")),
+                _ => {
+                    let md = std::str::from_utf8(&bytes)?;
+                    let link = md.split("](").nth(1).unwrap().split(')').next().unwrap();
+                    assert!(path.parent().unwrap().join(link).exists());
+                }
             }
             assert!(restored.export(5, format, &path, &[0]).is_err());
         }
