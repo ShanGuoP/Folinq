@@ -51,3 +51,7 @@
 **/GeneratedPluginRegistrant.java
 
 !.gitattributes
+
+# Repository introduction and project license.
+!/README.md
+!/LICENSE
