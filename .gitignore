@@ -7,22 +7,15 @@
 !*.cpp
 !*.cc
 !*.h
-!*.kt
-!*.kts
-!*.xml
 !*.rc
 !*.manifest
 !*.cmake
-!*.ps1
 !Cargo.toml
 !Cargo.lock
 !CMakeLists.txt
 !pubspec.yaml
 !pubspec.lock
-!analysis_options.yaml
 !flutter_rust_bridge.yaml
-!gradle.properties
-!gradle-wrapper.properties
 
 # Local documents, assets, toolchains, dependencies and build outputs.
 /docs/
@@ -55,3 +48,16 @@
 # Repository introduction and project license.
 !/README.md
 !/LICENSE
+
+# Windows-only public source tree; keep local tests and other targets private.
+/apps/flutter_app/test/
+/apps/flutter_app/integration_test/
+/apps/flutter_app/android/
+/apps/flutter_app/ios/
+/apps/flutter_app/linux/
+/apps/flutter_app/macos/
+/apps/flutter_app/web/
+/apps/flutter_app/analysis_options.yaml
+/tests/
+!/tools/build-windows.ps1
+!/tools/setup-windows.ps1

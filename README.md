@@ -49,7 +49,7 @@ PDF 的情况比看上去复杂：扫描件、嵌套对象、特殊字体和多�
 
 交互表单、数字证书签名、完整结构化转换和大文件性能还需要继续完善。图形手签只是页面图形。脱敏副本会将整份文档转为图片页面，不保留原来的可选文字、表单或附件。
 
-Android 代码保留在仓库里，当前开发重点是 Windows。
+当前公开仓库专注 Windows；Android 暂不推进。
 
 ## 本地开发
 
@@ -68,12 +68,12 @@ powershell -ExecutionPolicy Bypass -File tools/build-windows.ps1
 
 构建脚本会准备固定版本的 PDFium，并优先使用 `.tools/flutter` 下的 Flutter；也可以使用系统 PATH 中的 Flutter。
 
-**仓库目前只保留源码和必要配置。** 字体、图标、测试 PDF、视觉基线和编译产物没有上传。从干净仓库构建前，还需要补齐：
+**仓库只保留 Windows 源码、必要的构建配置和构建脚本。** 测试目录、其他平台工程、字体、图标、测试 PDF、视觉基线和编译产物没有上传。从干净仓库构建前，还需要补齐：
 
 - `apps/flutter_app/assets/fonts/` 下的 `NotoSansSC.ttf`、`OFL-NotoSansSC.txt` 和 `manifest.json`，其中字体为项目使用的静态中文字体。
 - `apps/flutter_app/windows/runner/resources/app_icon.ico`。
 
-现有脚本不会自动补齐这两部分资源。完整测试还需要准备 `tests/pdf-fixtures/native-text.pdf` 和本地视觉基线。
+现有脚本不会自动补齐这两部分资源。
 
 构建结果位于：
 
@@ -87,15 +87,13 @@ apps/flutter_app/build/windows/x64/runner/Release/Folinq.exe
 
 ```powershell
 cargo build --manifest-path rust/Cargo.toml --workspace --locked
-cargo test --manifest-path rust/Cargo.toml --workspace --locked
 cargo clippy --manifest-path rust/Cargo.toml --workspace --all-targets --locked -- -D warnings
 
 cd apps/flutter_app
 flutter analyze
-flutter test
 ```
 
-原生桥接测试需要先构建 Rust。修改桥接接口后，在仓库根目录重新运行 `flutter_rust_bridge_codegen generate`。
+修改桥接接口后，在仓库根目录重新运行 `flutter_rust_bridge_codegen generate`。
 
 ### 目录
 
