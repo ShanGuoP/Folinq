@@ -1,0 +1,5 @@
+rust_input: crate::api
+rust_root: rust/crates/app-api/
+dart_output: apps/flutter_app/lib/core/rust/
+dart_root: apps/flutter_app/
+web: false

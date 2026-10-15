@@ -1,0 +1,28 @@
+[package]
+name = "app-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[[bin]]
+name = "pdf-editor"
+path = "src/main.rs"
+
+[dependencies]
+document-core = { path = "../document-core" }
+pdf-engine = { path = "../pdf-engine" }
+ocr-engine = { path = "../ocr-engine" }
+storage = { path = "../storage" }
+anyhow.workspace = true
+serde_json.workspace = true
+serde.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+flutter_rust_bridge = "=2.11.1"
+
+[dev-dependencies]
+zip = { version = "=8.6.0", default-features = false, features = ["deflate"] }

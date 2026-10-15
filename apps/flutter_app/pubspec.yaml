@@ -1,0 +1,24 @@
+name: local_pdf_editor
+description: Offline PDF editing workbench powered by Rust.
+publish_to: none
+version: 0.1.0+1
+environment:
+  sdk: '>=3.8.0 <4.0.0'
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_riverpod: 3.0.3
+  flutter_rust_bridge: 2.11.1
+  file_picker: 10.3.7
+  path_provider: 2.1.5
+  crypto: 3.0.7
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 6.0.0
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/fonts/NotoSansSC.ttf
+    - assets/fonts/OFL-NotoSansSC.txt
+    - assets/fonts/manifest.json
