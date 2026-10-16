@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../documents/document_controller.dart';
+import '../../core/export_locations.dart';
 
 class RedactionDialog extends ConsumerStatefulWidget {
   const RedactionDialog({super.key, required this.snapshot});
@@ -19,6 +20,7 @@ class _RedactionDialogState extends ConsumerState<RedactionDialog> {
   bool busy = false;
   String? message;
   Future<void> export() async {
+    if (busy) return;
     final captured = widget.snapshot.document!;
     final state = ref.read(documentProvider);
     if (state.document?.id != captured.id ||
@@ -27,37 +29,67 @@ class _RedactionDialogState extends ConsumerState<RedactionDialog> {
       setState(() => message = '文档已变化，请关闭并重新框选。');
       return;
     }
-    final destination = await FilePicker.platform.saveFile(
-      dialogTitle: '导出图片脱敏副本',
-      fileName: 'redacted.pdf',
-      type: FileType.custom,
-      allowedExtensions: ['pdf'],
-    );
-    if (!mounted || destination == null) return;
     setState(() {
       busy = true;
       message = null;
     });
-    await ref
-        .read(documentProvider.notifier)
-        .command(
-          'redact_export',
-          value: jsonEncode({
-            'page': widget.snapshot.page,
-            'areas': [
-              for (final area in areas)
-                [area.left, area.top, area.right, area.bottom],
-            ],
-            'destination': destination,
-          }),
-        );
-    if (!mounted) return;
-    setState(() {
-      busy = false;
-      message =
-          ref.read(documentProvider).error ??
-          '导出成功：脱敏副本已保存。\n保存位置：$destination\n整份输出均为图片页面，不包含原文字层或附件。';
-    });
+    try {
+      final locations = ref.read(exportLocationsProvider);
+      final initialDirectory = await locations.initialDirectory(
+        captured.source,
+      );
+      if (!mounted) return;
+      final name = captured.name.replaceAll(
+        RegExp(r'\.pdf$', caseSensitive: false),
+        '',
+      );
+      final suggested = '$name-redacted.pdf';
+      final destination = await FilePicker.platform.saveFile(
+        dialogTitle: '导出图片脱敏副本',
+        initialDirectory: initialDirectory,
+        fileName: initialDirectory == null
+            ? suggested
+            : File(
+                availableExportPath('$initialDirectory/$suggested'),
+              ).uri.pathSegments.last,
+        type: FileType.custom,
+        allowedExtensions: ['pdf'],
+      );
+      if (!mounted || destination == null) return;
+      final output = availableExportPath(
+        withExportExtension(destination, 'pdf'),
+      );
+      final remembered = await locations.remember(File(output).parent.path);
+      if (!mounted) return;
+      final current = ref.read(documentProvider).document;
+      if (current?.id != captured.id || current?.version != captured.version) {
+        setState(() => message = '文档已变化，请关闭并重新框选。');
+        return;
+      }
+      await ref
+          .read(documentProvider.notifier)
+          .command(
+            'redact_export',
+            value: jsonEncode({
+              'page': widget.snapshot.page,
+              'areas': [
+                for (final area in areas)
+                  [area.left, area.top, area.right, area.bottom],
+              ],
+              'destination': output,
+            }),
+          );
+      if (!mounted) return;
+      setState(() {
+        message =
+            ref.read(documentProvider).error ??
+            '导出成功：脱敏副本已保存。\n保存位置：$output\n整份输出均为图片页面，不包含原文字层或附件。${remembered ? '' : '\n未能保存目录偏好'}';
+      });
+    } catch (failure) {
+      if (mounted) setState(() => message = '导出失败：$failure');
+    } finally {
+      if (mounted) setState(() => busy = false);
+    }
   }
 
   @override

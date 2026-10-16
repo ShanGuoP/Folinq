@@ -282,13 +282,6 @@ class DocumentToolStrip extends ConsumerStatefulWidget {
 }
 
 class _DocumentToolStripState extends ConsumerState<DocumentToolStrip> {
-  final scroll = ScrollController();
-  @override
-  void dispose() {
-    scroll.dispose();
-    super.dispose();
-  }
-
   Future<void> action(
     BuildContext context,
     WidgetRef ref,
@@ -554,152 +547,147 @@ class _DocumentToolStripState extends ConsumerState<DocumentToolStrip> {
   Widget build(BuildContext context) {
     final state = ref.watch(documentProvider);
     final busy = state.busy;
-    return SizedBox(
-      height: 48,
-      child: Scrollbar(
-        controller: scroll,
-        thumbVisibility: true,
-        child: SingleChildScrollView(
-          controller: scroll,
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 14),
-          child: Row(
-            children: [
-              TextButton.icon(
-                onPressed: busy
-                    ? null
-                    : () => ref
-                          .read(documentProvider.notifier)
-                          .importDocument([]),
-                icon: const Icon(Icons.note_add_outlined, size: 16),
-                label: const Text('新建'),
-              ),
-              for (final item in [
-                ('search', Icons.search, '搜索'),
-                ('copy', Icons.copy_outlined, '复制'),
-                ('insert_text', Icons.text_fields, '添加文字'),
-                ('insert_image', Icons.image_outlined, '添加图片'),
-                ('comment', Icons.comment_outlined, '注释'),
-              ])
-                TextButton.icon(
-                  onPressed: busy ? null : () => action(context, ref, item.$1),
-                  icon: Icon(item.$2, size: 16),
-                  label: Text(item.$3),
-                ),
-              TextButton.icon(
-                onPressed: busy ? null : () => action(context, ref, 'draw'),
-                icon: const Icon(Icons.draw_outlined, size: 16),
-                label: const Text('绘画 / 手签'),
-              ),
-              TextButton.icon(
-                onPressed: busy
-                    ? null
-                    : () async {
-                        final controller = ref.read(documentProvider.notifier);
-                        if (!await controller.applyPendingDrafts() ||
-                            !context.mounted) {
-                          return;
-                        }
-                        final snapshot = ref.read(documentProvider);
-                        if (snapshot.preview != null) {
-                          await showDialog<void>(
-                            context: context,
-                            barrierDismissible: false,
-                            builder: (_) => RedactionDialog(snapshot: snapshot),
-                          );
-                        }
-                      },
-                icon: const Icon(Icons.hide_image_outlined, size: 16),
-                label: const Text('脱敏副本'),
-              ),
-              TextButton.icon(
-                onPressed: busy
-                    ? null
-                    : () => showDialog<void>(
-                        context: context,
-                        builder: (_) => const AnnotationsDialog(),
-                      ),
-                icon: const Icon(Icons.speaker_notes_outlined, size: 16),
-                label: const Text('管理批注'),
-              ),
-              PopupMenuButton<String>(
-                tooltip: '页面管理',
-                enabled: !busy,
-                onSelected: (value) => action(context, ref, value),
-                itemBuilder: (_) => [
-                  for (final item in [
-                    ('rotate', '顺时针旋转'),
-                    ('insert_page', '插入空白页'),
-                    ('delete_page', '删除当前页'),
-                    ('move_up', '当前页上移'),
-                    ('move_down', '当前页下移'),
-                    ('merge', '从 PDF 插入页面'),
-                  ])
-                    PopupMenuItem(value: item.$1, child: Text(item.$2)),
-                ],
-                child: const Padding(
-                  padding: EdgeInsets.all(10),
-                  child: Row(
-                    children: [
-                      Icon(Icons.view_carousel_outlined, size: 16),
-                      SizedBox(width: 6),
-                      Text('页面管理'),
-                    ],
-                  ),
-                ),
-              ),
-              PopupMenuButton<String>(
-                tooltip: '导出',
-                enabled: !busy,
-                onSelected: (value) => action(context, ref, 'export_$value'),
-                itemBuilder: (_) => [
-                  for (final item in [
-                    ('pdf', 'PDF / 拆分'),
-                    ('md', 'Markdown'),
-                    ('txt', '纯文本 TXT'),
-                    ('docx', 'Word DOCX'),
-                    ('png', 'PNG 图片 / 批量'),
-                    ('jpg', 'JPG 图片 / 批量'),
-                  ])
-                    PopupMenuItem(value: item.$1, child: Text(item.$2)),
-                ],
-                child: const Padding(
-                  padding: EdgeInsets.all(10),
-                  child: Row(
-                    children: [
-                      Icon(Icons.ios_share_outlined, size: 16),
-                      SizedBox(width: 6),
-                      Text('导出'),
-                    ],
-                  ),
-                ),
-              ),
-              TextButton.icon(
-                onPressed: state.ocrRunning
-                    ? () => ref.read(documentProvider.notifier).cancelOcr()
-                    : busy || !Platform.isWindows
-                    ? null
-                    : () => action(context, ref, 'ocr'),
-                icon: Icon(
-                  state.ocrRunning
-                      ? Icons.cancel_outlined
-                      : Icons.document_scanner_outlined,
-                  size: 16,
-                ),
-                label: Text(
-                  state.ocrRunning
-                      ? '取消识别'
-                      : Platform.isWindows
-                      ? '离线 OCR'
-                      : 'OCR（Windows）',
-                ),
-              ),
-              const ImportDocumentButton(),
-              const RecoveryButton(),
-              const CacheButton(),
-            ],
+    return Padding(
+      key: const ValueKey('document-tools'),
+      padding: const EdgeInsets.fromLTRB(14, 4, 14, 8),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          TextButton.icon(
+            onPressed: busy
+                ? null
+                : () => ref.read(documentProvider.notifier).importDocument([]),
+            icon: const Icon(Icons.note_add_outlined, size: 16),
+            label: const Text('新建'),
           ),
-        ),
+          for (final item in [
+            ('search', Icons.search, '搜索'),
+            ('copy', Icons.copy_outlined, '复制'),
+            ('insert_text', Icons.text_fields, '添加文字'),
+            ('insert_image', Icons.image_outlined, '添加图片'),
+            ('comment', Icons.comment_outlined, '注释'),
+          ])
+            TextButton.icon(
+              onPressed: busy ? null : () => action(context, ref, item.$1),
+              icon: Icon(item.$2, size: 16),
+              label: Text(item.$3),
+            ),
+          TextButton.icon(
+            onPressed: busy ? null : () => action(context, ref, 'draw'),
+            icon: const Icon(Icons.draw_outlined, size: 16),
+            label: const Text('绘画 / 手签'),
+          ),
+          TextButton.icon(
+            onPressed: busy
+                ? null
+                : () async {
+                    final controller = ref.read(documentProvider.notifier);
+                    if (!await controller.applyPendingDrafts() ||
+                        !context.mounted) {
+                      return;
+                    }
+                    final snapshot = ref.read(documentProvider);
+                    if (snapshot.preview != null) {
+                      await showDialog<void>(
+                        context: context,
+                        barrierDismissible: false,
+                        builder: (_) => RedactionDialog(snapshot: snapshot),
+                      );
+                    }
+                  },
+            icon: const Icon(Icons.hide_image_outlined, size: 16),
+            label: const Text('脱敏副本'),
+          ),
+          TextButton.icon(
+            onPressed: busy
+                ? null
+                : () => showDialog<void>(
+                    context: context,
+                    builder: (_) => const AnnotationsDialog(),
+                  ),
+            icon: const Icon(Icons.speaker_notes_outlined, size: 16),
+            label: const Text('管理批注'),
+          ),
+          PopupMenuButton<String>(
+            tooltip: '页面管理',
+            enabled: !busy,
+            onSelected: (value) => action(context, ref, value),
+            itemBuilder: (_) => [
+              for (final item in [
+                ('rotate', '顺时针旋转'),
+                ('insert_page', '插入空白页'),
+                ('delete_page', '删除当前页'),
+                ('move_up', '当前页上移'),
+                ('move_down', '当前页下移'),
+                ('merge', '从 PDF 插入页面'),
+              ])
+                PopupMenuItem(value: item.$1, child: Text(item.$2)),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.all(10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.view_carousel_outlined, size: 16),
+                  SizedBox(width: 6),
+                  Text('页面管理'),
+                ],
+              ),
+            ),
+          ),
+          PopupMenuButton<String>(
+            tooltip: '导出',
+            enabled: !busy,
+            onSelected: (value) => action(context, ref, 'export_$value'),
+            itemBuilder: (_) => [
+              for (final item in [
+                ('pdf', 'PDF / 拆分'),
+                ('md', 'Markdown'),
+                ('txt', '纯文本 TXT'),
+                ('docx', 'Word DOCX'),
+                ('png', 'PNG 图片 / 批量'),
+                ('jpg', 'JPG 图片 / 批量'),
+              ])
+                PopupMenuItem(value: item.$1, child: Text(item.$2)),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.all(10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.ios_share_outlined, size: 16),
+                  SizedBox(width: 6),
+                  Text('导出'),
+                ],
+              ),
+            ),
+          ),
+          TextButton.icon(
+            onPressed: state.ocrRunning
+                ? () => ref.read(documentProvider.notifier).cancelOcr()
+                : busy || !Platform.isWindows
+                ? null
+                : () => action(context, ref, 'ocr'),
+            icon: Icon(
+              state.ocrRunning
+                  ? Icons.cancel_outlined
+                  : Icons.document_scanner_outlined,
+              size: 16,
+            ),
+            label: Text(
+              state.ocrRunning
+                  ? '取消识别'
+                  : Platform.isWindows
+                  ? '离线 OCR'
+                  : 'OCR（Windows）',
+            ),
+          ),
+          const ImportDocumentButton(),
+          const RecoveryButton(),
+          const CacheButton(),
+        ],
       ),
     );
   }

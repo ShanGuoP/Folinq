@@ -5,10 +5,13 @@ use anyhow::{Context, Result};
 use std::{
     collections::HashMap,
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, MutexGuard, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
-static SESSIONS: OnceLock<Mutex<HashMap<String, Session>>> = OnceLock::new();
+static SESSIONS: OnceLock<Mutex<HashMap<String, Arc<SessionEntry>>>> = OnceLock::new();
 type Cancellations = HashMap<String, std::sync::Arc<std::sync::atomic::AtomicBool>>;
 static OCR_TASKS: OnceLock<Mutex<Cancellations>> = OnceLock::new();
 
@@ -33,17 +36,51 @@ impl Drop for OcrTask {
     }
 }
 
-fn sessions() -> &'static Mutex<HashMap<String, Session>> {
+fn sessions() -> &'static Mutex<HashMap<String, Arc<SessionEntry>>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// The registry protects membership only. Each document serializes its own work.
+struct SessionEntry {
+    session: Mutex<Session>,
+    closed: AtomicBool,
+}
+impl SessionEntry {
+    fn new(session: Session) -> Arc<Self> {
+        Arc::new(Self {
+            session: Mutex::new(session),
+            closed: AtomicBool::new(false),
+        })
+    }
+    fn lock(&self) -> Result<MutexGuard<'_, Session>> {
+        let guard = self
+            .session
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
+        anyhow::ensure!(!self.closed.load(Ordering::Acquire), "DOCUMENT_CLOSED");
+        Ok(guard)
+    }
+}
+fn session_entry(id: &str) -> Result<Arc<SessionEntry>> {
+    sessions()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?
+        .get(id)
+        .cloned()
+        .context("DOCUMENT_CLOSED")
 }
 
 pub fn open_document(source: String, workspace: String) -> Result<String> {
     let session = Session::open(Path::new(&source), Path::new(&workspace))?;
+    storage::Projects::open(&Path::new(&workspace).join("projects.sqlite"))?.command(
+        "show",
+        &serde_json::json!({"source_key":Session::source_key(&session.info.source_path)}),
+    )?;
     let json = serde_json::to_string(&session.info)?;
     sessions()
         .lock()
         .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?
-        .insert(session.info.id.clone(), session);
+        .insert(session.info.id.clone(), SessionEntry::new(session));
     Ok(json)
 }
 
@@ -119,10 +156,8 @@ pub fn document_command(
     object_id: String,
     value: String,
 ) -> Result<String> {
-    let mut sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    let session = sessions.get_mut(&document_id).context("DOCUMENT_CLOSED")?;
+    let entry = session_entry(&document_id)?;
+    let mut session = entry.lock()?;
     match command.as_str() {
         "replace_text" => session.replace(expected_version, &object_id, &value)?,
         "replace_text_options" => {
@@ -169,11 +204,12 @@ pub fn document_command(
                     .cloned()
                     .unwrap_or(serde_json::json!([])),
             )?;
-            session.export(
+            session.export_with_mode(
                 expected_version,
                 request["format"].as_str().context("INVALID_EXPORT")?,
                 Path::new(request["destination"].as_str().context("INVALID_EXPORT")?),
                 &pages,
+                request["mode"].as_str().unwrap_or("layout"),
             )?;
         }
         "redact_export" => {
@@ -212,10 +248,8 @@ pub fn page_annotations(
     expected_version: u64,
     page_index: u16,
 ) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    let session = sessions.get(&document_id).context("DOCUMENT_CLOSED")?;
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
     document_core::check_version(session.info.version, expected_version)?;
     pdf_engine::annotations::list(&session.bytes()?, page_index)
 }
@@ -226,6 +260,9 @@ pub fn recognize_page(
     page_index: u16,
     language: String,
 ) -> Result<String> {
+    // Keep the original handle across OCR; closing/reopening the same ID must
+    // never let a late result attach to a replacement session.
+    let entry = session_entry(&document_id)?;
     let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let mut tasks = OCR_TASKS
@@ -237,10 +274,7 @@ pub fn recognize_page(
     }
     let _task = OcrTask(document_id.clone());
     let (preview, cache) = {
-        let sessions = sessions()
-            .lock()
-            .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-        let session = sessions.get(&document_id).context("DOCUMENT_CLOSED")?;
+        let session = entry.lock()?;
         let cache = session.ocr_cache(expected_version, page_index, &language)?;
         let page = &session.info.pages[page_index as usize];
         if !page.text_content.trim().is_empty() {
@@ -263,10 +297,7 @@ pub fn recognize_page(
         !cancelled.load(std::sync::atomic::Ordering::Relaxed),
         "TASK_CANCELLED"
     );
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    let session = sessions.get(&document_id).context("DOCUMENT_CLOSED")?;
+    let session = entry.lock()?;
     document_core::check_version(session.info.version, expected_version)?;
     let json = serde_json::to_string(&result)?;
     std::fs::write(cache, &json)?;
@@ -275,19 +306,18 @@ pub fn recognize_page(
 
 /// Render a library cover without opening a new editor tab.
 pub fn document_cover(workspace: String, document_id: String) -> Result<String> {
+    if let Ok(entry) = session_entry(&document_id) {
+        let session = entry.lock()?;
+        return session.detail_preview(session.info.version, 0, 512);
+    }
     let session = Session::recover(Path::new(&workspace), &document_id)?;
     session.detail_preview(session.info.version, 0, 512)
 }
 
 pub fn document_history(document_id: String) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    Ok(sessions
-        .get(&document_id)
-        .context("DOCUMENT_CLOSED")?
-        .history()?
-        .to_string())
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
+    Ok(session.history()?.to_string())
 }
 
 pub fn recoverable_documents(workspace: String) -> Result<String> {
@@ -306,7 +336,7 @@ pub fn project_catalog(workspace: String, command: String, value: String) -> Res
     if matches!(command.as_str(), "rename" | "delete") {
         uuid::Uuid::parse_str(request["id"].as_str().context("INVALID_PROJECT_ID")?)?;
     }
-    if command == "assign" {
+    if matches!(command.as_str(), "assign" | "forget" | "show") {
         let document = request["document_id"]
             .as_str()
             .context("INVALID_DOCUMENT_ID")?;
@@ -319,12 +349,13 @@ pub fn project_catalog(workspace: String, command: String, value: String) -> Res
             uuid::Uuid::parse_str(project)?;
         }
     }
-    if command == "assign" {
+    if matches!(command.as_str(), "assign" | "forget" | "show") {
         let records = Session::recoverable(root)?;
         let target = records
             .iter()
             .find(|d| Some(d.id.as_str()) == request["document_id"].as_str())
             .context("DOCUMENT_NOT_FOUND")?;
+        request["source_key"] = serde_json::json!(Session::source_key(&target.source_path));
         request["document_ids"] = serde_json::json!(
             records
                 .iter()
@@ -338,6 +369,13 @@ pub fn project_catalog(workspace: String, command: String, value: String) -> Res
 }
 
 pub fn restore_document(workspace: String, document_id: String) -> Result<String> {
+    anyhow::ensure!(
+        !sessions()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?
+            .contains_key(&document_id),
+        "DOCUMENT_ALREADY_OPEN"
+    );
     let session = Session::recover(Path::new(&workspace), &document_id)?;
     let json = serde_json::to_string(&session.info)?;
     let mut sessions = sessions()
@@ -347,16 +385,33 @@ pub fn restore_document(workspace: String, document_id: String) -> Result<String
         !sessions.contains_key(&document_id),
         "DOCUMENT_ALREADY_OPEN"
     );
-    sessions.insert(document_id, session);
+    sessions.insert(document_id, SessionEntry::new(session));
     Ok(json)
 }
 
 pub fn close_document(document_id: String) -> Result<()> {
+    let entry = sessions()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?
+        .get(&document_id)
+        .cloned()
+        .context("DOCUMENT_CLOSED")?;
+    anyhow::ensure!(
+        !entry.closed.swap(true, Ordering::AcqRel),
+        "DOCUMENT_CLOSED"
+    );
+    cancel_task(document_id.clone())?;
+    // Wait for work already in progress; queued handles will see closed=true.
+    let _guard = entry
+        .session
+        .lock()
+        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
+    // Keep membership reserved while an old operation finishes, so a restore
+    // cannot create a second writer for the same workspace directory.
     sessions()
         .lock()
         .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?
-        .remove(&document_id)
-        .context("DOCUMENT_CLOSED")?;
+        .remove(&document_id);
     Ok(())
 }
 
@@ -365,13 +420,9 @@ pub fn render_preview(
     expected_version: u64,
     page_index: u16,
 ) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    sessions
-        .get(&document_id)
-        .context("DOCUMENT_CLOSED")?
-        .preview(expected_version, page_index)
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
+    session.preview(expected_version, page_index)
 }
 
 pub fn render_detail(
@@ -380,13 +431,9 @@ pub fn render_detail(
     page_index: u16,
     width: u32,
 ) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    sessions
-        .get(&document_id)
-        .context("DOCUMENT_CLOSED")?
-        .detail_preview(expected_version, page_index, width)
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
+    session.detail_preview(expected_version, page_index, width)
 }
 
 pub fn prepare_external_export(
@@ -395,13 +442,9 @@ pub fn prepare_external_export(
     format: String,
     pages: Vec<u16>,
 ) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    sessions
-        .get(&document_id)
-        .context("DOCUMENT_CLOSED")?
-        .prepare_external_export(expected_version, &format, &pages)
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
+    session.prepare_external_export(expected_version, &format, &pages)
 }
 
 pub fn view_state(
@@ -409,13 +452,9 @@ pub fn view_state(
     expected_version: u64,
     value: Option<String>,
 ) -> Result<String> {
-    let sessions = sessions()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
-    sessions
-        .get(&document_id)
-        .context("DOCUMENT_CLOSED")?
-        .view_state(expected_version, value.as_deref())
+    let entry = session_entry(&document_id)?;
+    let session = entry.lock()?;
+    session.view_state(expected_version, value.as_deref())
 }
 
 pub fn application_data(workspace: String, clear_cache: bool) -> Result<String> {
@@ -459,4 +498,105 @@ pub fn application_data(workspace: String, clear_cache: bool) -> Result<String> 
         }
     }
     Ok(serde_json::json!({"cache_bytes":bytes,"cache_files":files,"removed":removed,"locked":locked}).to_string())
+}
+
+#[cfg(test)]
+mod concurrency_tests {
+    use super::*;
+    use std::{fs, sync::mpsc, thread, time::Duration};
+
+    #[test]
+    fn export_endpoint_honors_editable_and_plain_text_modes() -> Result<()> {
+        use std::io::Read;
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("source.pdf");
+        fs::write(&source, pdf_engine::create_fixture()?)?;
+        let info: serde_json::Value = serde_json::from_str(&open_document(
+            source.to_string_lossy().into(),
+            temp.path().join("sessions").to_string_lossy().into(),
+        )?)?;
+        let id = info["id"].as_str().unwrap();
+        for mode in ["layout", "text"] {
+            let destination = temp.path().join(format!("{mode}.docx"));
+            document_command(id.into(), 0, "export".into(), String::new(),
+                serde_json::json!({"format":"docx","mode":mode,"destination":destination,"pages":[0]}).to_string())?;
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(fs::read(destination)?))?;
+            let mut xml = String::new();
+            archive
+                .by_name("word/document.xml")?
+                .read_to_string(&mut xml)?;
+            assert!(xml.contains("Hello PDF Editor"));
+            assert_eq!(xml.contains("<w:framePr"), mode == "layout");
+            assert!(!archive.file_names().any(|n| n.starts_with("word/media/")));
+        }
+        let invalid = temp.path().join("invalid.docx");
+        assert!(
+            document_command(
+                id.into(),
+                0,
+                "export".into(),
+                String::new(),
+                serde_json::json!({"format":"docx","mode":"invalid","destination":invalid})
+                    .to_string()
+            )
+            .is_err()
+        );
+        assert!(!invalid.exists());
+        close_document(id.into())?;
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_document_does_not_hold_registry_and_close_invalidates_handles() -> Result<()> {
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("input.pdf");
+        fs::write(&source, pdf_engine::create_fixture()?)?;
+        let workspace = temp.path().join("sessions").to_string_lossy().into_owned();
+        let open = || -> Result<String> {
+            let info: serde_json::Value = serde_json::from_str(&open_document(
+                source.to_string_lossy().into(),
+                workspace.clone(),
+            )?)?;
+            Ok(info["id"].as_str().unwrap().into())
+        };
+        let a = open()?;
+        let b = open()?;
+        let entry = session_entry(&a)?;
+        let guard = entry.lock()?;
+        let (tx, rx) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            tx.send(view_state(b.clone(), 0, None)).unwrap();
+            close_document(b).unwrap();
+        });
+        // This would time out with a business operation holding the registry.
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5))??, "{}");
+        worker.join().unwrap();
+        let closing_id = a.clone();
+        let closer = thread::spawn(move || close_document(a));
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !entry.closed.load(Ordering::Acquire) && std::time::Instant::now() < deadline {
+            thread::yield_now();
+        }
+        assert!(entry.closed.load(Ordering::Acquire));
+        assert!(!closer.is_finished());
+        assert!(
+            restore_document(workspace.clone(), closing_id.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("DOCUMENT_ALREADY_OPEN")
+        );
+        drop(guard);
+        closer.join().unwrap()?;
+        assert!(
+            entry
+                .lock()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("DOCUMENT_CLOSED")
+        );
+        restore_document(workspace, closing_id.clone())?;
+        close_document(closing_id)?;
+        Ok(())
+    }
 }

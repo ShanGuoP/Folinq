@@ -7,7 +7,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'core/rust/frb_generated.dart';
 import 'shared/editor_theme.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
   String? startupError;
   try {
@@ -21,19 +21,28 @@ Future<void> main() async {
   } catch (error) {
     startupError = '$error';
   }
-  runApp(ProviderScope(child: PdfEditorApp(startupError: startupError)));
+  runApp(
+    ProviderScope(
+      child: PdfEditorApp(startupError: startupError, startupPaths: arguments),
+    ),
+  );
 }
 
 class PdfEditorApp extends StatelessWidget {
-  const PdfEditorApp({super.key, this.startupError});
+  const PdfEditorApp({
+    super.key,
+    this.startupError,
+    this.startupPaths = const [],
+  });
   final String? startupError;
+  final List<String> startupPaths;
   @override
   Widget build(BuildContext context) => MaterialApp(
     title: 'Folinq 页翎',
     debugShowCheckedModeBanner: false,
     theme: editorTheme(),
     home: startupError == null
-        ? const Workbench()
+        ? Workbench(startupPaths: startupPaths)
         : Scaffold(
             body: Center(
               child: SizedBox(

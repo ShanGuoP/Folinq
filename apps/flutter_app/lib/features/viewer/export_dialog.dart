@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/export_locations.dart';
 import '../documents/document_controller.dart';
 
 List<int> parsePageRange(String input, int pageCount) {
@@ -46,8 +47,10 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
   Future<void> export() async {
     final controller = ref.read(documentProvider.notifier);
     final snapshot = ref.read(documentProvider);
-    if (snapshot.document == null || snapshot.busy) return;
+    if (running || snapshot.document == null || snapshot.busy) return;
     setState(() {
+      running = true;
+      cancelled = false;
       completed = 0;
       total = 0;
       message = null;
@@ -60,20 +63,40 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         RegExp(r'\.pdf$', caseSensitive: false),
         '',
       );
+      final locations = ref.read(exportLocationsProvider);
+      final initialDirectory = await locations.initialDirectory(
+        snapshot.document!.source,
+      );
+      if (!mounted || cancelled) return;
       String? destination;
       if (perPage) {
         destination = await FilePicker.platform.getDirectoryPath(
           dialogTitle: '选择输出文件夹',
+          initialDirectory: initialDirectory,
         );
       } else {
         destination = await FilePicker.platform.saveFile(
           dialogTitle: '导出所选页面',
-          fileName: '$name.${widget.format}',
+          fileName: initialDirectory == null
+              ? '$name.${widget.format}'
+              : File(
+                  availableExportPath(
+                    '$initialDirectory/$name.${widget.format}',
+                  ),
+                ).uri.pathSegments.last,
+          initialDirectory: initialDirectory,
           type: FileType.custom,
           allowedExtensions: [widget.format],
         );
       }
-      if (destination == null || !mounted) return;
+      if (destination == null || !mounted || cancelled) return;
+      if (!perPage) {
+        destination = withExportExtension(destination, widget.format);
+      }
+      final remembered = await locations.remember(
+        perPage ? destination : File(destination).parent.path,
+      );
+      if (!mounted || cancelled) return;
       final jobs = perPage
           ? [
               for (final page in pages) [page],
@@ -81,13 +104,13 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
           : [pages];
       final paths = [
         for (final job in jobs)
-          perPage
-              ? '$destination${Platform.pathSeparator}$name-page-${(job.first + 1).toString().padLeft(4, '0')}.${widget.format}'
-              : destination,
+          availableExportPath(
+            perPage
+                ? '$destination${Platform.pathSeparator}$name-page-${(job.first + 1).toString().padLeft(4, '0')}.${widget.format}'
+                : destination,
+          ),
       ];
-      if (paths.any((path) => File(path).existsSync())) {
-        throw const FormatException('输出中有同名文件，请选择新的文件名或空文件夹。');
-      }
+      final actualDestination = perPage ? destination : paths.single;
       setState(() {
         running = true;
         completed = 0;
@@ -100,6 +123,9 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         throw FormatException(ref.read(documentProvider).error ?? '草稿提交失败');
       }
       final document = ref.read(documentProvider).document!;
+      if (document.id != snapshot.document!.id) {
+        throw const FormatException('当前文档已切换，请重新导出。');
+      }
       for (var i = 0; i < jobs.length && !cancelled; i++) {
         final current = ref.read(documentProvider).document;
         if (current?.id != document.id ||
@@ -125,7 +151,8 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         setState(() {
           succeeded = completed == total;
           message =
-              '${succeeded ? '导出成功' : '已停止导出'}，已保存 $completed 个文件。\n保存位置：$destination';
+              '${succeeded ? '导出成功' : '已停止导出'}，已保存 $completed 个文件。\n保存位置：$actualDestination'
+              '${!remembered ? '\n未能保存目录偏好，下次启动将使用 PDF 所在文件夹。' : ''}';
         });
       }
     } catch (failure) {
@@ -170,6 +197,10 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                   ),
                 ),
                 const SizedBox(height: 12),
+                const Text(
+                  '同名文件会自动添加编号保存，保留已有文件。',
+                  style: TextStyle(fontSize: 12),
+                ),
                 if (!['png', 'jpg'].contains(widget.format))
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
@@ -186,12 +217,17 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                   DropdownButtonFormField<String>(
                     initialValue: mode,
                     decoration: const InputDecoration(labelText: '导出方式'),
-                    items: const [
+                    items: [
                       DropdownMenuItem(
                         value: 'layout',
-                        child: Text('保留原版式（推荐）'),
+                        child: Text(
+                          widget.format == 'docx' ? '可编辑文字与版式' : '页面图片与版式',
+                        ),
                       ),
-                      DropdownMenuItem(value: 'text', child: Text('提取可编辑文字')),
+                      const DropdownMenuItem(
+                        value: 'text',
+                        child: Text('仅提取文字'),
+                      ),
                     ],
                     onChanged: running || succeeded
                         ? null
@@ -202,8 +238,8 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                     mode == 'layout'
                         ? (widget.format == 'md'
                               ? '每页保存为高清图片，保留表格、图片和文字外观。请将 Markdown 与配套资源文件夹一起移动。'
-                              : '每页以高清图片嵌入 Word，保留表格、图片和文字外观；页内文字与表格不能单独编辑。')
-                        : '只提取可编辑文字，不保留图片、表格结构和原始排版。需要完整外观请选择“保留原版式”。',
+                              : '文字、字号、字体、颜色及位置转换为可编辑的 Word 内容，同时保留原有图片和可识别的表格。扫描页需先完成 OCR。')
+                        : '仅提取文字内容，不保留图片、表格结构和原始排版。',
                     style: const TextStyle(fontSize: 12),
                   ),
                 ],

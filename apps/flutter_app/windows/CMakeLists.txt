@@ -1,5 +1,5 @@
 # Project-level configuration.
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.15)
 project(Folinq LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -110,6 +110,19 @@ install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
 # Keep the native document engine beside the executable for both flutter run
 # and distributable builds. Cargo owns Rust's incremental dependency tracking.
 get_filename_component(PDF_EDITOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
+add_executable(folinq_launcher WIN32
+  "${PDF_EDITOR_ROOT}/tools/windows-launcher.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/runner/Runner.rc")
+target_compile_features(folinq_launcher PRIVATE cxx_std_17)
+target_compile_definitions(folinq_launcher PRIVATE UNICODE _UNICODE NOMINMAX)
+target_include_directories(folinq_launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/runner")
+target_link_libraries(folinq_launcher PRIVATE user32)
+set_target_properties(folinq_launcher PROPERTIES
+  OUTPUT_NAME "FolinqLauncher"
+  MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_dependencies(${BINARY_NAME} folinq_launcher)
+install(TARGETS folinq_launcher RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
 find_program(CARGO_EXECUTABLE cargo REQUIRED)
 add_custom_target(pdf_editor_engine ALL
   COMMAND "${CARGO_EXECUTABLE}" build --manifest-path "${PDF_EDITOR_ROOT}/rust/Cargo.toml"

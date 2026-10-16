@@ -1,0 +1,24 @@
+name: Windows checks
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+          cache: true
+      - name: Prepare and verify
+        shell: pwsh
+        run: ./tools/check-windows.ps1 -Prepare
+      - name: Build Windows application
+        shell: pwsh
+        run: |
+          cd apps/flutter_app
+          flutter build windows --release --no-pub
+          if ($LASTEXITCODE -ne 0) { throw 'Windows build failed.' }

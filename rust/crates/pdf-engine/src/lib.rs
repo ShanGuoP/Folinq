@@ -12,6 +12,7 @@ static PDF_WORKER: Mutex<()> = Mutex::new(());
 static PDFIUM: OnceLock<Pdfium> = OnceLock::new();
 pub mod annotations;
 pub mod conversion;
+pub mod editable_docx;
 pub mod operations;
 pub mod redaction;
 pub mod searchable;

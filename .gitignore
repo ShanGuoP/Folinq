@@ -57,7 +57,13 @@
 /apps/flutter_app/linux/
 /apps/flutter_app/macos/
 /apps/flutter_app/web/
-/apps/flutter_app/analysis_options.yaml
 /tests/
 !/tools/build-windows.ps1
 !/tools/setup-windows.ps1
+!/tools/prepare-resources.py
+!/tools/package-windows.py
+!/tools/check-windows.ps1
+!/rust-toolchain.toml
+!/.github/workflows/windows.yml
+
+!/apps/flutter_app/analysis_options.yaml

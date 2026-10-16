@@ -35,7 +35,7 @@ Widget motionLayout(Widget? current, List<Widget> previous) => Stack(
 
 ThemeData editorTheme() => ThemeData(
   useMaterial3: true,
-  fontFamily: 'Microsoft YaHei',
+  fontFamily: 'FolinqSans',
   fontFamilyFallback: const ['Segoe UI', 'sans-serif'],
   scaffoldBackgroundColor: EditorColors.shell,
   colorScheme: const ColorScheme.light(
@@ -53,10 +53,24 @@ ThemeData editorTheme() => ThemeData(
     thickness: 1,
   ),
   textTheme: const TextTheme(
-    bodyMedium: TextStyle(fontSize: 13, height: 1.6),
-    bodySmall: TextStyle(fontSize: 12, color: EditorColors.muted, height: 1.6),
+    bodyMedium: TextStyle(
+      fontSize: 13,
+      height: 1.4,
+      leadingDistribution: TextLeadingDistribution.even,
+    ),
+    bodySmall: TextStyle(
+      fontSize: 12,
+      color: EditorColors.muted,
+      height: 1.4,
+      leadingDistribution: TextLeadingDistribution.even,
+    ),
     titleMedium: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-    labelLarge: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+    labelLarge: TextStyle(
+      fontSize: 13,
+      fontWeight: FontWeight.w500,
+      height: 1.2,
+      leadingDistribution: TextLeadingDistribution.even,
+    ),
   ),
   tooltipTheme: TooltipThemeData(
     decoration: BoxDecoration(
@@ -78,8 +92,18 @@ ThemeData editorTheme() => ThemeData(
   filledButtonTheme: FilledButtonThemeData(
     style: FilledButton.styleFrom(
       elevation: 0,
+      alignment: Alignment.center,
       minimumSize: const Size(40, 36),
       padding: const EdgeInsets.symmetric(horizontal: 16),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+    ),
+  ),
+  outlinedButtonTheme: OutlinedButtonThemeData(
+    style: OutlinedButton.styleFrom(
+      minimumSize: const Size(40, 36),
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      alignment: Alignment.center,
+      foregroundColor: EditorColors.secondary,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
     ),
   ),

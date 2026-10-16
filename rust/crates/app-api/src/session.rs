@@ -3,6 +3,7 @@ use document_core::{DocumentInfo, PageInfo, check_version};
 use pdf_engine::operations::{ObjectOperation, PageOperation};
 use sha2::{Digest, Sha256};
 use std::{
+    collections::HashSet,
     fs,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -239,7 +240,13 @@ impl Session {
                 if version > info.version || !path.with_extension("pdf").is_file() {
                     continue;
                 }
-                let metadata = fs::metadata(&path)?;
+                let metadata = match fs::metadata(&path) {
+                    Ok(metadata) => metadata,
+                    // A different session may reclaim its old history while
+                    // this read-only listing is in progress.
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(error) => return Err(error.into()),
+                };
                 let time = metadata
                     .modified()?
                     .duration_since(std::time::UNIX_EPOCH)
@@ -297,16 +304,12 @@ impl Session {
             "INVALID_HISTORY_VERSION"
         );
         let bytes = read_pdf(&path)?;
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
-        if undo.len() > HISTORY_LIMIT {
-            undo.remove(0);
-        }
+        let undo = self.next_undo();
         self.commit_with_pages(&bytes, undo, vec![], template.pages)
     }
 
     fn journal(&self, info: &DocumentInfo) -> Result<()> {
-        // Immutable version records: the highest complete record is the recovery point.
+        // Immutable records are candidates; recovery.json is the sole commit point.
         publish_new(
             &self
                 .directory
@@ -352,25 +355,69 @@ impl Session {
     pub fn view_state(&self, version: u64, value: Option<&str>) -> Result<String> {
         check_version(self.info.version, version)?;
         let path = self.directory.join("view.json");
+        let draft_path = self.directory.join("drafts.json");
+        const DRAFT_LIMIT: usize = 8 * 1024 * 1024;
         if let Some(value) = value {
-            ensure!(value.len() <= 65536, "VIEW_STATE_LIMIT");
-            let record: serde_json::Value = serde_json::from_str(value)?;
+            ensure!(value.len() <= DRAFT_LIMIT + 65536, "DRAFT_STATE_LIMIT");
+            let mut record: serde_json::Value = serde_json::from_str(value)?;
             let page_id = record["page_id"].as_str().context("INVALID_VIEW_STATE")?;
             ensure!(
                 self.info.pages.iter().any(|p| p.id == page_id),
                 "PAGE_NOT_FOUND"
             );
-            let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
-            temporary.write_all(value.as_bytes())?;
-            temporary.as_file().sync_all()?;
-            temporary.persist(&path).map_err(|e| e.error)?;
+            let mut drafts = serde_json::Map::new();
+            drafts.insert("version".into(), serde_json::json!(version));
+            // Target context travels with input, so a crash between the two
+            // publications cannot attach a legacy draft to an older selection.
+            for key in ["page_id", "selected_id"] {
+                if let Some(value) = record.get(key) {
+                    drafts.insert(key.into(), value.clone());
+                }
+            }
+            // Keep legacy single-selection drafts compatible while migrating.
+            for key in ["draft", "options", "drafts", "edit_options"] {
+                if let Some(value) = record
+                    .as_object_mut()
+                    .context("INVALID_VIEW_STATE")?
+                    .remove(key)
+                {
+                    drafts.insert(key.into(), value);
+                }
+            }
+            let draft_bytes = serde_json::to_vec(&drafts)?;
+            ensure!(draft_bytes.len() <= DRAFT_LIMIT, "DRAFT_STATE_LIMIT");
+            let view_bytes = serde_json::to_vec(&record)?;
+            ensure!(view_bytes.len() <= 65536, "VIEW_STATE_LIMIT");
+            // User input has its own budget and durable file. Propagate failures.
+            for (path, bytes) in [(&draft_path, draft_bytes), (&path, view_bytes)] {
+                let mut temporary = tempfile::NamedTempFile::new_in(&self.directory)?;
+                temporary.write_all(&bytes)?;
+                temporary.as_file().sync_all()?;
+                temporary.persist(path).map_err(|e| e.error)?;
+            }
             return Ok(value.to_owned());
         }
-        if path.exists() && path.metadata()?.len() <= 65536 {
-            Ok(fs::read_to_string(path)?)
-        } else {
-            Ok("{}".into())
+        // Broken optional preferences must not hide an intact user draft.
+        let mut record = fs::metadata(&path)
+            .ok()
+            .filter(|m| m.len() <= 65536)
+            .and_then(|_| fs::read(&path).ok())
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+        if draft_path.exists() {
+            ensure!(
+                draft_path.metadata()?.len() <= DRAFT_LIMIT as u64,
+                "DRAFT_STATE_LIMIT"
+            );
+            let drafts: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_slice(&fs::read(draft_path)?)?;
+            record
+                .as_object_mut()
+                .context("INVALID_VIEW_STATE")?
+                .extend(drafts);
         }
+        Ok(record.to_string())
     }
 
     pub fn ocr_cache(&self, version: u64, page: u16, language: &str) -> Result<PathBuf> {
@@ -400,11 +447,7 @@ impl Session {
         let result: document_core::OcrResult =
             serde_json::from_slice(&fs::read(path).context("OCR_RESULT_REQUIRED")?)?;
         let bytes = pdf_engine::searchable::add_search_layer(&self.bytes()?, page, &result, font)?;
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
-        if undo.len() > HISTORY_LIMIT {
-            undo.remove(0);
-        }
+        let undo = self.next_undo();
         self.commit(&bytes, undo, vec![])
     }
 
@@ -422,11 +465,23 @@ impl Session {
         let ids: Vec<String> = template.iter().map(|p| p.id.clone()).collect();
         let mut pages = pdf_engine::inspect(bytes, Some(&ids))?;
         reconcile(&mut pages, &template);
-        let version = self
+        let mut version = self
             .info
             .version
             .checked_add(1)
             .context("VERSION_EXHAUSTED")?;
+        // A crash can leave either candidate file behind. Never overwrite it.
+        while self
+            .directory
+            .join(format!("version-{version}.pdf"))
+            .exists()
+            || self
+                .directory
+                .join(format!("version-{version}.json"))
+                .exists()
+        {
+            version = version.checked_add(1).context("VERSION_EXHAUSTED")?;
+        }
         let working = self.directory.join(format!("version-{version}.pdf"));
         let mut info = self.info.clone();
         info.pages = pages;
@@ -448,6 +503,55 @@ impl Session {
         self.info = info;
         self.undo = undo;
         self.redo = redo;
+        // Reclaim only after publishing the recovery commit. Cleanup failure
+        // cannot turn an already committed edit into a reported failure.
+        if let Err(error) = self.collect_snapshots() {
+            let _ = fs::write(self.directory.join("cleanup-error.log"), error.to_string());
+        }
+        Ok(())
+    }
+
+    fn next_undo(&self) -> Vec<PathBuf> {
+        let mut undo = self.undo.clone();
+        undo.push(PathBuf::from(&self.info.working_path));
+        if undo.len() > HISTORY_LIMIT {
+            undo.remove(0);
+        }
+        undo
+    }
+
+    fn collect_snapshots(&self) -> Result<()> {
+        let current = PathBuf::from(&self.info.working_path);
+        let keep: HashSet<_> = self
+            .undo
+            .iter()
+            .chain(&self.redo)
+            .chain(std::iter::once(&current))
+            .filter_map(|p| p.file_stem().map(|s| s.to_owned()))
+            .collect();
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            let path = entry.path();
+            let Some(stem) = path.file_stem() else {
+                continue;
+            };
+            if stem
+                .to_string_lossy()
+                .strip_prefix("version-")
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_some()
+                && matches!(
+                    path.extension().and_then(|e| e.to_str()),
+                    Some("pdf" | "json")
+                )
+                && !keep.contains(stem)
+            {
+                fs::remove_file(path)?;
+            }
+        }
         Ok(())
     }
 
@@ -493,11 +597,7 @@ impl Session {
             object.layout_bounds.as_ref().unwrap_or(&object.bounds),
             options,
         )?;
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
-        if undo.len() > HISTORY_LIMIT {
-            undo.remove(0);
-        }
+        let undo = self.next_undo();
         self.commit(&bytes, undo, vec![])
     }
 
@@ -516,8 +616,7 @@ impl Session {
         check_version(self.info.version, expected_version)?;
         let mut redo = self.redo.clone();
         let next = redo.pop().context("NOTHING_TO_REDO")?;
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
+        let undo = self.next_undo();
         let info: DocumentInfo = serde_json::from_slice(&fs::read(next.with_extension("json"))?)?;
         self.commit_with_pages(&read_pdf(&next)?, undo, redo, info.pages)
     }
@@ -670,11 +769,7 @@ impl Session {
             }
             _ => {}
         }
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
-        if undo.len() > HISTORY_LIMIT {
-            undo.remove(0);
-        }
+        let undo = self.next_undo();
         self.commit_with_pages(&bytes, undo, vec![], template)
     }
 
@@ -724,11 +819,7 @@ impl Session {
                 }
             }
         }
-        let mut undo = self.undo.clone();
-        undo.push(PathBuf::from(&self.info.working_path));
-        if undo.len() > HISTORY_LIMIT {
-            undo.remove(0);
-        }
+        let undo = self.next_undo();
         self.commit_with_pages(&bytes, undo, vec![], template)
     }
 
@@ -767,17 +858,20 @@ impl Session {
                 })
                 .collect::<Result<_>>()?
         };
-        if matches!(format, "docx" | "md") && mode == "layout" {
+        if format == "docx" && mode == "layout" {
+            return publish_new(
+                destination,
+                &pdf_engine::editable_docx::export(
+                    &self.bytes()?,
+                    &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
+                )?,
+            );
+        }
+        if format == "md" && mode == "layout" {
             let images = pdf_engine::conversion::layout_pages(
                 &self.bytes()?,
                 &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
             )?;
-            if format == "docx" {
-                return publish_new(
-                    destination,
-                    &pdf_engine::conversion::layout_docx(&selected, &images)?,
-                );
-            }
             // Stage all images before publishing the .md. A unique adjacent
             // directory avoids overwriting existing resources or racing exports.
             let parent = destination
@@ -936,7 +1030,9 @@ mod tests {
         archive
             .by_name("word/document.xml")?
             .read_to_string(&mut xml)?;
-        assert_eq!(xml.matches("<wp:anchor").count(), 2);
+        assert_eq!(xml.matches("<wp:anchor").count(), 1);
+        assert!(xml.contains("<w:framePr") || xml.contains("<w:tbl>"));
+        assert!(xml.contains("Hello PDF Editor"));
         assert_eq!(xml.matches("<w:sectPr>").count(), 2);
         assert!(xml.contains("relativeFrom=\"page\""));
         let media_names = archive
@@ -944,15 +1040,13 @@ mod tests {
             .filter(|name| name.starts_with("word/media/") && !name.ends_with('/'))
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        assert_eq!(media_names.len(), 2);
+        assert_eq!(media_names.len(), 1);
         for name in media_names {
             let mut png = Vec::new();
             archive.by_name(&name)?.read_to_end(&mut png)?;
             let image = image::load_from_memory(&png)?;
-            // docx-rs re-encodes PNG; compare pixels rather than PNG compression.
-            assert!(expected_images.iter().any(|expected| {
-                image::load_from_memory(expected).unwrap().to_rgba8() == image.to_rgba8()
-            }));
+            // The only media is the original inserted image, not page screenshots.
+            assert!(image.width() < 1000 && image.height() < 1000);
         }
         let markdown = temp.path().join("document with spaces.md");
         session.export(v, "md", &markdown, &[1, 0])?;
@@ -1262,7 +1356,10 @@ mod tests {
             "selected_id":session.info.pages[0].text_objects[0].id, "draft":"Pending new text"})
         .to_string();
         session.view_state(8, Some(&view))?;
-        assert_eq!(session.view_state(8, None)?, view);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&session.view_state(8, None)?)?,
+            serde_json::from_str::<serde_json::Value>(&view)?
+        );
         assert!(temp.path().join("sessions/catalog.sqlite").exists());
         assert!(!session.directory.join("catalog-error.log").exists());
         Ok(())
@@ -1305,3 +1402,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "session_reliability_tests.rs"]
+mod reliability_tests;

@@ -1,3 +1,5 @@
+import 'workbench_header.dart';
+import 'pdf_drop_region.dart';
 import 'history_dialog.dart';
 import 'dart:io';
 import 'dart:convert';
@@ -8,6 +10,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/font_assets.dart';
+import '../../core/export_locations.dart';
 import '../../core/rust/api.dart' as rust;
 import '../../shared/editor_theme.dart';
 import '../documents/document_controller.dart';
@@ -18,7 +21,8 @@ import 'continuous_canvas.dart';
 import 'project_home.dart';
 
 class Workbench extends ConsumerStatefulWidget {
-  const Workbench({super.key});
+  const Workbench({super.key, this.startupPaths = const []});
+  final List<String> startupPaths;
   @override
   ConsumerState<Workbench> createState() => _WorkbenchState();
 }
@@ -26,6 +30,7 @@ class Workbench extends ConsumerStatefulWidget {
 class _WorkbenchState extends ConsumerState<Workbench> {
   bool showPages = true, showProperties = true;
   bool showHome = false;
+  bool selectingSave = false;
   late final AppLifecycleListener lifecycle;
   @override
   void initState() {
@@ -37,7 +42,9 @@ class _WorkbenchState extends ConsumerState<Workbench> {
         if (!mounted) return AppExitResponse.exit;
         final documents = ref.read(openDocumentsProvider);
         final active = ref.read(documentProvider);
-        await ref.read(documentProvider.notifier).persistView();
+        if (!await ref.read(documentProvider.notifier).persistAll()) {
+          return AppExitResponse.cancel;
+        }
         if (!mounted) return AppExitResponse.exit;
         if (!active.busy &&
             !documents.any((d) => d.dirty) &&
@@ -92,6 +99,22 @@ class _WorkbenchState extends ConsumerState<Workbench> {
   }
 
   Future<void> save() async {
+    if (selectingSave) return;
+    selectingSave = true;
+    try {
+      await saveAs();
+    } catch (failure) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('另存失败：$failure')));
+      }
+    } finally {
+      selectingSave = false;
+    }
+  }
+
+  Future<void> saveAs() async {
     if (ref.read(documentProvider).busy ||
         ref.read(documentProvider).document == null) {
       return;
@@ -108,21 +131,38 @@ class _WorkbenchState extends ConsumerState<Workbench> {
       }
       return;
     }
+    final document = ref.read(documentProvider).document!;
+    final locations = ref.read(exportLocationsProvider);
+    final initialDirectory = await locations.initialDirectory(document.source);
+    if (!mounted) return;
+    final name = document.name.replaceAll(
+      RegExp(r'\.pdf$', caseSensitive: false),
+      '',
+    );
+    final suggested = '$name-edited.pdf';
     final destination = await FilePicker.platform.saveFile(
       dialogTitle: '另存为新的 PDF 文件',
-      fileName: 'edited.pdf',
+      initialDirectory: initialDirectory,
+      fileName: initialDirectory == null
+          ? suggested
+          : File(
+              availableExportPath('$initialDirectory/$suggested'),
+            ).uri.pathSegments.last,
       type: FileType.custom,
       allowedExtensions: ['pdf'],
     );
     if (!mounted || destination == null) return;
-    await ref
-        .read(documentProvider.notifier)
-        .command('save_as', value: destination);
+    final output = availableExportPath(withExportExtension(destination, 'pdf'));
+    final remembered = await locations.remember(File(output).parent.path);
+    if (!mounted || ref.read(documentProvider).document?.id != document.id) {
+      return;
+    }
+    await ref.read(documentProvider.notifier).command('save_as', value: output);
     if (!mounted) return;
     if (ref.read(documentProvider).error == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('已另存为新 PDF，原件保留'),
+        SnackBar(
+          content: Text('已另存为：$output${remembered ? '' : '\n未能保存目录偏好'}'),
           behavior: SnackBarBehavior.floating,
           duration: Duration(seconds: 3),
         ),
@@ -171,391 +211,312 @@ class _WorkbenchState extends ConsumerState<Workbench> {
       child: Focus(
         autofocus: true,
         child: Scaffold(
-          body: SafeArea(
-            child: Column(
-              children: [
-                SizedBox(
-                  height: 58,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          tooltip: '项目 / 历史',
-                          onPressed: state.busy
-                              ? null
-                              : () => setState(() => showHome = true),
-                          icon: const Icon(Icons.home_outlined),
-                        ),
-                        const Icon(
-                          Icons.picture_as_pdf_outlined,
-                          size: 22,
-                          color: EditorColors.text,
-                        ),
-                        const SizedBox(width: 10),
-                        if (!compact) ...[
-                          const Text(
-                            'Folinq 页翎',
-                            style: TextStyle(fontWeight: FontWeight.w600),
-                          ),
-                          const SizedBox(width: 20),
-                          const SizedBox(height: 16, child: VerticalDivider()),
-                          const SizedBox(width: 16),
-                        ],
-                        Expanded(
-                          child: Row(
-                            children: [
-                              Flexible(
-                                child: Text(
-                                  document?.name ?? '项目与 PDF',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                    fontSize: 12,
-                                    color: EditorColors.secondary,
-                                  ),
-                                ),
-                              ),
-                              if (document?.dirty == true)
-                                Padding(
-                                  padding: const EdgeInsets.only(left: 8),
-                                  child: Tooltip(
-                                    message: '尚未保存',
-                                    child: Container(
-                                      width: 6,
-                                      height: 6,
-                                      decoration: const BoxDecoration(
-                                        color: EditorColors.warning,
-                                        shape: BoxShape.circle,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                        MotionFeedback(
-                          enabled: !state.busy,
-                          child: TextButton.icon(
-                            onPressed: state.busy ? null : open,
-                            icon: const Icon(
-                              Icons.folder_open_outlined,
-                              size: 17,
-                            ),
-                            label: Text(compact ? '打开' : '打开 PDF'),
-                          ),
-                        ),
-                        if (document != null)
-                          IconButton(
-                            tooltip: '历史版本',
-                            onPressed: state.busy
-                                ? null
-                                : () => showDialog<void>(
-                                    context: context,
-                                    builder: (_) => const HistoryDialog(),
-                                  ),
-                            icon: const Icon(Icons.history, size: 20),
-                          ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
+          body: PdfDropRegion(
+            startupPaths: widget.startupPaths,
+            onOpened: () => setState(() => showHome = false),
+            child: SafeArea(
+              child: Column(
+                children: [
+                  WorkbenchHeader(
+                    state: state,
+                    showingHome: showHome,
+                    onNavigate: () => setState(() => showHome = !showHome),
+                    onOpen: open,
+                    onSave: saveSource,
+                    onSaveAs: save,
+                    onHistory: () => showDialog<void>(
+                      context: context,
+                      builder: (_) => const HistoryDialog(),
+                    ),
+                  ),
+                  DocumentTabs(disabled: state.busy),
+                  if (document != null) const DocumentToolStrip(),
+                  if (state.error != null)
+                    MaterialBanner(
+                      content: Text(state.error!),
+                      actions: [
+                        TextButton(
                           onPressed: document == null || state.busy
                               ? null
-                              : saveSource,
-                          icon: const Icon(Icons.save_outlined, size: 16),
-                          label: const Text('保存'),
-                        ),
-                        MotionFeedback(
-                          enabled: document != null && !state.busy,
-                          child: FilledButton.icon(
-                            onPressed: document == null || state.busy
-                                ? null
-                                : save,
-                            icon: const Icon(Icons.save_outlined, size: 16),
-                            label: const Text('另存为'),
-                          ),
+                              : () => controller.goToPage(state.page),
+                          child: const Text('刷新预览'),
                         ),
                       ],
                     ),
-                  ),
-                ),
-                DocumentTabs(disabled: state.busy),
-                if (document != null) const DocumentToolStrip(),
-                if (state.error != null)
-                  MaterialBanner(
-                    content: Text(state.error!),
-                    actions: [
-                      TextButton(
-                        onPressed: document == null || state.busy
-                            ? null
-                            : () => controller.goToPage(state.page),
-                        child: const Text('刷新预览'),
-                      ),
-                    ],
-                  ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
-                    child: Row(
-                      children: [
-                        if (wide && document != null)
-                          AnimatedContainer(
-                            duration: motionDuration(context, 200),
-                            curve: Curves.easeOutCubic,
-                            width: showPages ? 184 : 0,
-                            clipBehavior: Clip.hardEdge,
-                            decoration: const BoxDecoration(),
-                            child: OverflowBox(
-                              alignment: Alignment.centerLeft,
-                              minWidth: 184,
-                              maxWidth: 184,
-                              child: Padding(
-                                padding: const EdgeInsets.only(right: 12),
-                                child: ExcludeFocus(
-                                  excluding: !showPages,
-                                  child: ExcludeSemantics(
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+                      child: Row(
+                        children: [
+                          if (wide && document != null)
+                            AnimatedContainer(
+                              duration: motionDuration(context, 200),
+                              curve: Curves.easeOutCubic,
+                              width: showPages ? 184 : 0,
+                              clipBehavior: Clip.hardEdge,
+                              decoration: const BoxDecoration(),
+                              child: OverflowBox(
+                                alignment: Alignment.centerLeft,
+                                minWidth: 184,
+                                maxWidth: 184,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(right: 12),
+                                  child: ExcludeFocus(
                                     excluding: !showPages,
-                                    child: IgnorePointer(
-                                      ignoring: !showPages,
-                                      child: _PagePanel(state: state),
+                                    child: ExcludeSemantics(
+                                      excluding: !showPages,
+                                      child: IgnorePointer(
+                                        ignoring: !showPages,
+                                        child: _PagePanel(state: state),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                        Expanded(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(14),
-                            child: ColoredBox(
-                              color: EditorColors.canvas,
-                              child: Column(
-                                children: [
-                                  if (document != null)
-                                    Container(
-                                      height: 48,
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 12,
-                                      ),
-                                      decoration: const BoxDecoration(
-                                        border: Border(
-                                          bottom: BorderSide(
-                                            color: EditorColors.border,
+                          Expanded(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(14),
+                              child: ColoredBox(
+                                color: EditorColors.canvas,
+                                child: Column(
+                                  children: [
+                                    if (document != null)
+                                      Container(
+                                        height: 48,
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 12,
+                                        ),
+                                        decoration: const BoxDecoration(
+                                          border: Border(
+                                            bottom: BorderSide(
+                                              color: EditorColors.border,
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                      child: Row(
-                                        children: [
-                                          if (wide)
-                                            ToolButton(
-                                              icon: Icons.view_sidebar_outlined,
-                                              label: '切换页面列表',
-                                              selected: showPages,
-                                              onPressed: () => setState(
-                                                () => showPages = !showPages,
+                                        child: Row(
+                                          children: [
+                                            if (wide)
+                                              ToolButton(
+                                                icon:
+                                                    Icons.view_sidebar_outlined,
+                                                label: '切换页面列表',
+                                                selected: showPages,
+                                                onPressed: () => setState(
+                                                  () => showPages = !showPages,
+                                                ),
                                               ),
-                                            ),
-                                          const SizedBox(width: 4),
-                                          const Icon(
-                                            Icons.text_fields_outlined,
-                                            size: 17,
-                                          ),
-                                          const SizedBox(width: 8),
-                                          const Expanded(
-                                            child: Text(
-                                              '文字编辑',
-                                              style: TextStyle(
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w500,
-                                              ),
-                                            ),
-                                          ),
-                                          if (!compact) ...[
+                                            const SizedBox(width: 4),
                                             const Icon(
-                                              Icons.lock_outline,
-                                              size: 13,
-                                              color: EditorColors.muted,
+                                              Icons.text_fields_outlined,
+                                              size: 17,
                                             ),
-                                            const SizedBox(width: 5),
-                                            const Text(
-                                              '保持原版式',
-                                              style: TextStyle(
-                                                fontSize: 11,
+                                            const SizedBox(width: 8),
+                                            const Expanded(
+                                              child: Text(
+                                                '文字编辑',
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w500,
+                                                ),
+                                              ),
+                                            ),
+                                            if (!compact) ...[
+                                              const Icon(
+                                                Icons.lock_outline,
+                                                size: 13,
                                                 color: EditorColors.muted,
                                               ),
+                                              const SizedBox(width: 5),
+                                              const Text(
+                                                '保持原版式',
+                                                style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: EditorColors.muted,
+                                                ),
+                                              ),
+                                              const SizedBox(width: 16),
+                                            ],
+                                            ToolButton(
+                                              icon: Icons.undo_rounded,
+                                              label: '撤销',
+                                              onPressed:
+                                                  !state.busy &&
+                                                      document.canUndo == true
+                                                  ? () => controller.command(
+                                                      'undo',
+                                                    )
+                                                  : null,
                                             ),
-                                            const SizedBox(width: 16),
+                                            ToolButton(
+                                              icon: Icons.redo_rounded,
+                                              label: '重做',
+                                              onPressed:
+                                                  !state.busy &&
+                                                      document.canRedo == true
+                                                  ? () => controller.command(
+                                                      'redo',
+                                                    )
+                                                  : null,
+                                            ),
+                                            ToolButton(
+                                              icon: Icons.tune_rounded,
+                                              label: wide ? '切换文字属性' : '文字属性',
+                                              selected: wide && showProperties,
+                                              onPressed: wide
+                                                  ? () => setState(
+                                                      () => showProperties =
+                                                          !showProperties,
+                                                    )
+                                                  : () =>
+                                                        showModalBottomSheet<
+                                                          void
+                                                        >(
+                                                          context: context,
+                                                          isScrollControlled:
+                                                              true,
+                                                          showDragHandle: true,
+                                                          builder: (_) =>
+                                                              const _MobileProperties(),
+                                                        ),
+                                            ),
                                           ],
-                                          ToolButton(
-                                            icon: Icons.undo_rounded,
-                                            label: '撤销',
-                                            onPressed:
-                                                !state.busy &&
-                                                    document.canUndo == true
-                                                ? () =>
-                                                      controller.command('undo')
-                                                : null,
-                                          ),
-                                          ToolButton(
-                                            icon: Icons.redo_rounded,
-                                            label: '重做',
-                                            onPressed:
-                                                !state.busy &&
-                                                    document.canRedo == true
-                                                ? () =>
-                                                      controller.command('redo')
-                                                : null,
-                                          ),
-                                          ToolButton(
-                                            icon: Icons.tune_rounded,
-                                            label: wide ? '切换文字属性' : '文字属性',
-                                            selected: wide && showProperties,
-                                            onPressed: wide
-                                                ? () => setState(
-                                                    () => showProperties =
-                                                        !showProperties,
-                                                  )
-                                                : () => showModalBottomSheet<void>(
-                                                    context: context,
-                                                    isScrollControlled: true,
-                                                    showDragHandle: true,
-                                                    builder: (_) =>
-                                                        const _MobileProperties(),
-                                                  ),
-                                          ),
-                                        ],
+                                        ),
                                       ),
+                                    SizedBox(
+                                      height: 2,
+                                      child: state.busy
+                                          ? const LinearProgressIndicator(
+                                              minHeight: 2,
+                                              color: EditorColors.secondary,
+                                              backgroundColor:
+                                                  EditorColors.border,
+                                            )
+                                          : null,
                                     ),
-                                  SizedBox(
-                                    height: 2,
-                                    child: state.busy
-                                        ? const LinearProgressIndicator(
-                                            minHeight: 2,
-                                            color: EditorColors.secondary,
-                                            backgroundColor:
-                                                EditorColors.border,
-                                          )
-                                        : null,
-                                  ),
-                                  Expanded(
-                                    child: document == null
-                                        ? ProjectHome(
-                                            onOpen: state.busy ? null : open,
-                                            onEnter: () => setState(
-                                              () => showHome = false,
+                                    Expanded(
+                                      child: document == null
+                                          ? ProjectHome(
+                                              onOpen: state.busy ? null : open,
+                                              onEnter: () => setState(
+                                                () => showHome = false,
+                                              ),
+                                            )
+                                          : document.pages.length > 1
+                                          ? ContinuousCanvas(
+                                              key: ValueKey(document.id),
+                                              state: state,
+                                            )
+                                          : PageCanvas(
+                                              key: ValueKey(document.id),
+                                              state: state,
                                             ),
-                                          )
-                                        : document.pages.length > 1
-                                        ? ContinuousCanvas(
-                                            key: ValueKey(document.id),
-                                            state: state,
-                                          )
-                                        : PageCanvas(
-                                            key: ValueKey(document.id),
-                                            state: state,
-                                          ),
-                                  ),
-                                ],
+                                    ),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                        if (wide && document != null)
-                          AnimatedContainer(
-                            duration: motionDuration(context, 200),
-                            curve: Curves.easeOutCubic,
-                            width: showProperties ? 292 : 0,
-                            clipBehavior: Clip.hardEdge,
-                            decoration: const BoxDecoration(),
-                            child: OverflowBox(
-                              alignment: Alignment.centerRight,
-                              minWidth: 292,
-                              maxWidth: 292,
-                              child: Padding(
-                                padding: const EdgeInsets.only(left: 12),
-                                child: ExcludeFocus(
-                                  excluding: !showProperties,
-                                  child: ExcludeSemantics(
+                          if (wide && document != null)
+                            AnimatedContainer(
+                              duration: motionDuration(context, 200),
+                              curve: Curves.easeOutCubic,
+                              width: showProperties ? 292 : 0,
+                              clipBehavior: Clip.hardEdge,
+                              decoration: const BoxDecoration(),
+                              child: OverflowBox(
+                                alignment: Alignment.centerRight,
+                                minWidth: 292,
+                                maxWidth: 292,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(left: 12),
+                                  child: ExcludeFocus(
                                     excluding: !showProperties,
-                                    child: IgnorePointer(
-                                      ignoring: !showProperties,
-                                      child: PropertiesPanel(state: state),
+                                    child: ExcludeSemantics(
+                                      excluding: !showProperties,
+                                      child: IgnorePointer(
+                                        ignoring: !showProperties,
+                                        child: PropertiesPanel(state: state),
+                                      ),
                                     ),
                                   ),
                                 ),
                               ),
                             ),
-                          ),
-                      ],
+                        ],
+                      ),
                     ),
                   ),
-                ),
-                SizedBox(
-                  height: 40,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 22),
-                    child: Row(
-                      children: [
-                        Icon(
-                          state.busy ? Icons.sync : Icons.check_circle_outline,
-                          size: 13,
-                          color: state.busy
-                              ? EditorColors.warning
-                              : EditorColors.success,
-                        ),
-                        const SizedBox(width: 6),
-                        AnimatedSwitcher(
-                          duration: motionDuration(context),
-                          child: Text(
+                  SizedBox(
+                    height: 40,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 22),
+                      child: Row(
+                        children: [
+                          Icon(
                             state.busy
-                                ? '正在处理'
-                                : document?.dirty == true
-                                ? '修改待保存'
-                                : '本地处理 · 工作历史保留',
-                            key: ValueKey('${state.busy}-${document?.dirty}'),
-                            style: const TextStyle(
-                              fontSize: 11,
-                              color: EditorColors.muted,
-                            ),
+                                ? Icons.sync
+                                : Icons.check_circle_outline,
+                            size: 13,
+                            color: state.busy
+                                ? EditorColors.warning
+                                : EditorColors.success,
                           ),
-                        ),
-                        const Spacer(),
-                        if (document != null) ...[
-                          ToolButton(
-                            icon: Icons.chevron_left,
-                            label: '上一页',
-                            onPressed: state.busy || state.page == 0
-                                ? null
-                                : () => controller.goToPage(state.page - 1),
-                          ),
-                          Text(
-                            '${state.page + 1} / ${document.pages.length}',
-                            style: const TextStyle(fontSize: 11),
-                          ),
-                          ToolButton(
-                            icon: Icons.chevron_right,
-                            label: '下一页',
-                            onPressed:
-                                state.busy ||
-                                    state.page + 1 == document.pages.length
-                                ? null
-                                : () => controller.goToPage(state.page + 1),
-                          ),
-                          if (!compact) ...[
-                            const SizedBox(width: 12),
-                            Text(
-                              '版本 ${document.version}',
+                          const SizedBox(width: 6),
+                          AnimatedSwitcher(
+                            duration: motionDuration(context),
+                            child: Text(
+                              state.busy
+                                  ? '正在处理'
+                                  : document?.dirty == true
+                                  ? '修改待保存'
+                                  : '本地处理 · 工作历史保留',
+                              key: ValueKey('${state.busy}-${document?.dirty}'),
                               style: const TextStyle(
                                 fontSize: 11,
                                 color: EditorColors.muted,
                               ),
                             ),
+                          ),
+                          const Spacer(),
+                          if (document != null) ...[
+                            ToolButton(
+                              icon: Icons.chevron_left,
+                              label: '上一页',
+                              onPressed: state.busy || state.page == 0
+                                  ? null
+                                  : () => controller.goToPage(state.page - 1),
+                            ),
+                            Text(
+                              '${state.page + 1} / ${document.pages.length}',
+                              style: const TextStyle(fontSize: 11),
+                            ),
+                            ToolButton(
+                              icon: Icons.chevron_right,
+                              label: '下一页',
+                              onPressed:
+                                  state.busy ||
+                                      state.page + 1 == document.pages.length
+                                  ? null
+                                  : () => controller.goToPage(state.page + 1),
+                            ),
+                            if (!compact) ...[
+                              const SizedBox(width: 12),
+                              Text(
+                                '版本 ${document.version}',
+                                style: const TextStyle(
+                                  fontSize: 11,
+                                  color: EditorColors.muted,
+                                ),
+                              ),
+                            ],
                           ],
                         ],
-                      ],
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

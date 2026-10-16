@@ -43,6 +43,24 @@ class DocumentState {
   final int page;
   final TextObject? selected;
   final bool ocrRunning;
+  DocumentState withError(String? message) => DocumentState(
+    document: document,
+    busy: busy,
+    error: message,
+    page: page,
+    preview: preview,
+    selected: selected,
+    ocrRunning: ocrRunning,
+  );
+  DocumentState withBusy(bool value) => DocumentState(
+    document: document,
+    busy: value,
+    error: error,
+    page: page,
+    preview: preview,
+    selected: selected,
+    ocrRunning: ocrRunning,
+  );
 }
 
 final documentProvider = NotifierProvider<DocumentController, DocumentState>(
@@ -54,6 +72,7 @@ class DocumentController extends Notifier<DocumentState> {
   final Map<String, String> _drafts = {};
   final Map<String, Map<String, dynamic>> _editOptions = {};
   Timer? _viewTimer;
+  Future<void>? _persistenceTail;
   bool _viewDisposalRegistered = false;
   void scheduleViewSave() {
     if (!_viewDisposalRegistered) {
@@ -150,35 +169,101 @@ class DocumentController extends Notifier<DocumentState> {
     return state.error == null;
   }
 
-  Future<void> persistView() async {
-    final current = state;
+  Future<bool> persistView({DocumentState? snapshot}) async {
+    if (!ref.mounted) return false;
+    final current = snapshot ?? state;
     final document = current.document;
-    if (document == null || current.busy) return;
+    if (document == null) return true;
+    if (current.busy) return false;
     final selected = current.selected;
+    final value = jsonEncode({
+      'version': document.version,
+      'page_id': document.pages[current.page].id,
+      'selected_id': selected?.id,
+      'drafts': {
+        for (final e in _drafts.entries)
+          if (e.key.startsWith('${document.id}:'))
+            e.key.substring(document.id.length + 1): e.value,
+      },
+      'edit_options': {
+        for (final e in _editOptions.entries)
+          if (e.key.startsWith('${document.id}:'))
+            e.key.substring(document.id.length + 1): e.value,
+      },
+    });
+    final previousSave = _persistenceTail;
+    final complete = Completer<void>();
+    _persistenceTail = complete.future;
+    if (previousSave != null) await previousSave;
     try {
       await rust.viewState(
         documentId: document.id,
         expectedVersion: BigInt.from(document.version),
-        value: jsonEncode({
-          'version': document.version,
-          'page_id': document.pages[current.page].id,
-          'selected_id': selected?.id,
-          'draft': selected == null ? null : draftFor(selected.id),
-          'options': selected == null ? null : editOptionsFor(selected.id),
-          'drafts': {
-            for (final e in _drafts.entries)
-              if (e.key.startsWith('${document.id}:'))
-                e.key.substring(document.id.length + 1): e.value,
-          },
-          'edit_options': {
-            for (final e in _editOptions.entries)
-              if (e.key.startsWith('${document.id}:'))
-                e.key.substring(document.id.length + 1): e.value,
-          },
-        }),
+        value: value,
       );
-    } catch (_) {
-      /* Document durability is independent of optional view restoration. */
+      if (ref.mounted &&
+          state.document?.id == document.id &&
+          state.document?.version == document.version &&
+          state.error?.startsWith('草稿保存失败') == true) {
+        state = state.withError(null);
+      }
+      return true;
+    } catch (error) {
+      final message = '草稿保存失败，输入仍保留在当前窗口。请重试保存后再关闭：${readableError('$error')}';
+      if (!ref.mounted) return false;
+      if (state.document?.id == document.id &&
+          state.document?.version == document.version) {
+        state = state.withError(message);
+      } else if (_views[document.id]?.document?.version == document.version) {
+        _views[document.id] = _views[document.id]!.withError(message);
+      }
+      return false;
+    } finally {
+      complete.complete();
+      if (identical(_persistenceTail, complete.future)) _persistenceTail = null;
+    }
+  }
+
+  Future<bool> _flushBeforeTransition({DocumentState? snapshot}) async {
+    if (state.busy) return false;
+    final previous = state;
+    final target = snapshot ?? previous;
+    _viewTimer?.cancel();
+    state = previous.withBusy(true);
+    final saved = await persistView(snapshot: target);
+    if (!ref.mounted) return false;
+    final error = target.document?.id == previous.document?.id
+        ? state.error
+        : _views[target.document?.id]?.error;
+    state = saved
+        ? previous.withError(
+            previous.error?.startsWith('草稿保存失败') == true
+                ? null
+                : previous.error,
+          )
+        : previous.withError(error);
+    return saved;
+  }
+
+  Future<bool> persistAll() async {
+    if (state.busy) return false;
+    final active = state;
+    _viewTimer?.cancel();
+    state = active.withBusy(true);
+    try {
+      if (!await persistView(snapshot: active)) return false;
+      for (final view in _views.values.toList()) {
+        if (view.document?.id != active.document?.id &&
+            !await persistView(snapshot: view)) {
+          if (ref.mounted) {
+            state = state.withError(_views[view.document?.id]?.error);
+          }
+          return false;
+        }
+      }
+      return true;
+    } finally {
+      if (ref.mounted) state = state.withBusy(false);
     }
   }
 
@@ -224,7 +309,7 @@ class DocumentController extends Notifier<DocumentState> {
   Future<void> importDocument(List<String> sources) async {
     final previous = state;
     if (previous.busy) return;
-    unawaited(persistView());
+    if (!await _flushBeforeTransition()) return;
     state = DocumentState(
       document: previous.document,
       page: previous.page,
@@ -359,7 +444,7 @@ class DocumentController extends Notifier<DocumentState> {
   Future<void> open(String path) async {
     if (state.busy) return;
     final previous = state;
-    unawaited(persistView());
+    if (!await _flushBeforeTransition()) return;
     state = DocumentState(
       document: previous.document,
       page: previous.page,
@@ -499,20 +584,40 @@ class DocumentController extends Notifier<DocumentState> {
     }
   }
 
-  void switchDocument(String id) {
+  Future<void> switchDocument(String id) async {
     if (state.busy || state.document?.id == id) return;
     final next = _views[id];
     if (next == null) return;
-    persistView();
+    final previous = state;
+    if (!await _flushBeforeTransition() ||
+        state.document?.id != previous.document?.id ||
+        state.busy) {
+      return;
+    }
     if (state.document != null) _views[state.document!.id] = state;
     state = next;
   }
 
   Future<void> closeDocument(String id) async {
     if (state.busy) return;
-    if (state.document?.id == id) await persistView();
-    await rust.closeDocument(documentId: id);
+    final target = state.document?.id == id ? state : _views[id];
+    if (target == null || !await _flushBeforeTransition(snapshot: target)) {
+      return;
+    }
+    state = state.withBusy(true);
+    try {
+      await rust.closeDocument(documentId: id);
+    } catch (error) {
+      if (ref.mounted) {
+        state = state.withBusy(false).withError(readableError('$error'));
+      }
+      return;
+    }
+    if (!ref.mounted) return;
+    state = state.withBusy(false);
     _views.remove(id);
+    _drafts.removeWhere((key, _) => key.startsWith('$id:'));
+    _editOptions.removeWhere((key, _) => key.startsWith('$id:'));
     ref.read(openDocumentsProvider.notifier).remove(id);
     if (state.document?.id == id) {
       state = _views.values.lastOrNull ?? const DocumentState();
@@ -595,7 +700,7 @@ class DocumentController extends Notifier<DocumentState> {
       return;
     }
     final previous = state;
-    unawaited(persistView());
+    if (!await _flushBeforeTransition()) return;
     state = DocumentState(
       document: previous.document,
       page: previous.page,
@@ -748,6 +853,8 @@ class DocumentController extends Notifier<DocumentState> {
 
 String readableError(String error) {
   const messages = {
+    'EDITABLE_TEXT_REQUIRED': '所选页面只有扫描图片。请先使用离线 OCR 并加入可搜索文字层，再导出可编辑 Word。',
+    'DRAFT_STATE_LIMIT': '草稿总量超过 8 MiB，请先应用部分修改或缩短输入。',
     'FONT_MISSING_GLYPH': '当前字体缺少新文字的字形，请在文字属性中选择支持这些字符的字体。',
     'SAVE_VERIFICATION_FAILED': '修改后的文字未能正确保存，已保留原版本和输入。请尝试更换字体。',
     'SOURCE_CHANGED': '源 PDF 已被其他程序修改。请先另存为新文件，避免覆盖外部修改。',

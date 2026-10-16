@@ -270,63 +270,6 @@ pub fn layout_pages(bytes: &[u8], pages: &[u16]) -> Result<Vec<Vec<u8>>> {
     })
 }
 
-/// One full-page anchored image per section. Individual sections preserve mixed
-/// portrait/landscape page sizes. Tiny anchor paragraphs cannot add blank pages.
-pub fn layout_docx(pages: &[PageInfo], images: &[Vec<u8>]) -> Result<Vec<u8>> {
-    use docx_rs::*;
-    ensure!(
-        !pages.is_empty() && pages.len() == images.len(),
-        "INVALID_EXPORT_PAGES"
-    );
-    let margin = PageMargin::new()
-        .top(0)
-        .bottom(0)
-        .left(0)
-        .right(0)
-        .header(0)
-        .footer(0);
-    let mut document = Docx::new();
-    for (index, (page, image)) in pages.iter().zip(images).enumerate() {
-        // Word's maximum paper size is 22 inches. Scale oversized PDF pages
-        // proportionally; the visible composition remains unchanged.
-        let scale = (1584. / page.width.max(page.height)).min(1.);
-        let width = (page.width * scale * 20.).round() as u32;
-        let height = (page.height * scale * 20.).round() as u32;
-        let picture = Pic::new(image)
-            .size(width * 635, height * 635)
-            .floating()
-            .position_h(DrawingPosition::Offset(0))
-            .position_v(DrawingPosition::Offset(0))
-            .relative_from_h(RelativeFromHType::Page)
-            .relative_from_v(RelativeFromVType::Page);
-        let paragraph = Paragraph::new()
-            .add_run(Run::new().add_image(picture).size(2))
-            .line_spacing(
-                LineSpacing::new()
-                    .before(0)
-                    .after(0)
-                    .line(1)
-                    .line_rule(LineSpacingType::Exact),
-            );
-        if index + 1 == pages.len() {
-            document = document
-                .add_paragraph(paragraph)
-                .page_size(width, height)
-                .page_margin(margin.clone());
-        } else {
-            document = document.add_section(
-                Section::new()
-                    .page_size(PageSize::new().size(width, height))
-                    .page_margin(margin.clone())
-                    .add_paragraph(paragraph),
-            );
-        }
-    }
-    let mut output = std::io::Cursor::new(Vec::new());
-    document.build().pack(&mut output)?;
-    Ok(output.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

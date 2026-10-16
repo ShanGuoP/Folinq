@@ -8,6 +8,12 @@ if (Test-Path (Join-Path $localFlutter 'flutter.bat')) {
 if (-not (Get-Command flutter -ErrorAction SilentlyContinue)) {
     throw 'Flutter SDK is required. Install Flutter or place it in .tools/flutter.'
 }
+$flutterInfo = flutter --version --machine | ConvertFrom-Json
+if ($flutterInfo.frameworkVersion -ne '3.47.7') {
+    throw 'Use Flutter 3.47.7, the version pinned for this repository.'
+}
+python (Join-Path $PSScriptRoot 'prepare-resources.py')
+if ($LASTEXITCODE -ne 0) { throw 'Resource preparation failed.' }
 $archivePath = Join-Path $projectRoot 'native\windows\pdfium-win-x64.tgz'
 New-Item -ItemType Directory -Force (Split-Path $archivePath) | Out-Null
 if (-not (Test-Path $archivePath)) {
@@ -55,4 +61,7 @@ try {
 } finally { Pop-Location }
 flutter_rust_bridge_codegen generate
 if ($LASTEXITCODE -ne 0) { throw 'Bridge generation failed.' }
+# Keep generated Rust consistent with the repository formatter.
+cargo fmt --manifest-path rust/Cargo.toml --all
+if ($LASTEXITCODE -ne 0) { throw 'Rust formatting failed.' }
 Write-Host 'Windows dependencies are ready.'

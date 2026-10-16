@@ -23,9 +23,11 @@ class _HomeData {
       catalog['memberships'] as Map,
     );
     final bySource = <String, DocumentInfo>{};
+    final hidden = Set<String>.from(catalog['hidden_sources'] as List? ?? []);
     final groups = <String, dynamic>{};
     for (final document in all) {
       final key = _sourceKey(document);
+      if (hidden.contains(key)) continue;
       bySource.putIfAbsent(key, () => document);
       if (membershipsById[document.id] != null) {
         groups.putIfAbsent(key, () => membershipsById[document.id]);
@@ -156,6 +158,20 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
     );
     final path = result?.files.single.path;
     if (path != null) await controller.openIntoProject(path, project);
+  }
+
+  Future<void> forgetRecord(DocumentInfo document) async {
+    await change('forget', {'document_id': document.id});
+    if (!mounted || error != null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('已删除记录，源 PDF 和本机编辑历史保留。'),
+        action: SnackBarAction(
+          label: '撤销',
+          onPressed: () => change('show', {'document_id': document.id}),
+        ),
+      ),
+    );
   }
 
   @override
@@ -458,13 +474,15 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
                                         tooltip: '归组 PDF',
                                         enabled: !disabled,
                                         onSelected: (project) =>
-                                            change('assign', {
-                                              'document_id': document.id,
-                                              'project_id':
-                                                  project == 'standalone'
-                                                  ? null
-                                                  : project,
-                                            }),
+                                            project == 'forget'
+                                            ? forgetRecord(document)
+                                            : change('assign', {
+                                                'document_id': document.id,
+                                                'project_id':
+                                                    project == 'standalone'
+                                                    ? null
+                                                    : project,
+                                              }),
                                         itemBuilder: (_) => [
                                           const PopupMenuItem(
                                             value: 'standalone',
@@ -475,6 +493,11 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
                                               value: p['id'] as String,
                                               child: Text('移入 ${p['name']}'),
                                             ),
+                                          const PopupMenuDivider(),
+                                          const PopupMenuItem(
+                                            value: 'forget',
+                                            child: Text('删除记录（保留源文件）'),
+                                          ),
                                         ],
                                       ),
                                     );
