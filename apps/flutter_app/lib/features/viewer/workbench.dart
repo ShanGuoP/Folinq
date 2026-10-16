@@ -195,6 +195,9 @@ class _WorkbenchState extends ConsumerState<Workbench> {
     final controller = ref.read(documentProvider.notifier);
     final wide = MediaQuery.sizeOf(context).width >= 1000;
     final compact = MediaQuery.sizeOf(context).width < 600;
+    final spacious = MediaQuery.sizeOf(context).width >= 1400;
+    final pagePanelWidth = spacious ? 248.0 : 210.0;
+    final propertyPanelWidth = spacious ? 364.0 : 310.0;
     return CallbackShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.keyO, control: true): open,
@@ -245,20 +248,20 @@ class _WorkbenchState extends ConsumerState<Workbench> {
                     ),
                   Expanded(
                     child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+                      padding: const EdgeInsets.fromLTRB(18, 14, 18, 0),
                       child: Row(
                         children: [
                           if (wide && document != null)
                             AnimatedContainer(
                               duration: motionDuration(context, 200),
                               curve: Curves.easeOutCubic,
-                              width: showPages ? 184 : 0,
+                              width: showPages ? pagePanelWidth : 0,
                               clipBehavior: Clip.hardEdge,
                               decoration: const BoxDecoration(),
                               child: OverflowBox(
                                 alignment: Alignment.centerLeft,
-                                minWidth: 184,
-                                maxWidth: 184,
+                                minWidth: pagePanelWidth,
+                                maxWidth: pagePanelWidth,
                                 child: Padding(
                                   padding: const EdgeInsets.only(right: 12),
                                   child: ExcludeFocus(
@@ -276,23 +279,37 @@ class _WorkbenchState extends ConsumerState<Workbench> {
                             ),
                           Expanded(
                             child: ClipRRect(
-                              borderRadius: BorderRadius.circular(14),
+                              borderRadius: BorderRadius.circular(18),
                               child: ColoredBox(
-                                color: EditorColors.canvas,
+                                color: document == null
+                                    ? EditorColors.surface
+                                    : EditorColors.canvas,
                                 child: Column(
                                   children: [
                                     if (document != null)
                                       Container(
-                                        height: 48,
+                                        height: 46,
+                                        margin: const EdgeInsets.fromLTRB(
+                                          16,
+                                          0,
+                                          16,
+                                          10,
+                                        ),
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 12,
                                         ),
-                                        decoration: const BoxDecoration(
-                                          border: Border(
-                                            bottom: BorderSide(
-                                              color: EditorColors.border,
-                                            ),
+                                        decoration: BoxDecoration(
+                                          color: EditorColors.surface,
+                                          borderRadius: BorderRadius.circular(
+                                            14,
                                           ),
+                                          boxShadow: const [
+                                            BoxShadow(
+                                              color: EditorColors.shadow,
+                                              blurRadius: 16,
+                                              offset: Offset(0, 5),
+                                            ),
+                                          ],
                                         ),
                                         child: Row(
                                           children: [
@@ -421,13 +438,13 @@ class _WorkbenchState extends ConsumerState<Workbench> {
                             AnimatedContainer(
                               duration: motionDuration(context, 200),
                               curve: Curves.easeOutCubic,
-                              width: showProperties ? 292 : 0,
+                              width: showProperties ? propertyPanelWidth : 0,
                               clipBehavior: Clip.hardEdge,
                               decoration: const BoxDecoration(),
                               child: OverflowBox(
                                 alignment: Alignment.centerRight,
-                                minWidth: 292,
-                                maxWidth: 292,
+                                minWidth: propertyPanelWidth,
+                                maxWidth: propertyPanelWidth,
                                 child: Padding(
                                   padding: const EdgeInsets.only(left: 12),
                                   child: ExcludeFocus(
@@ -535,9 +552,9 @@ class _PagePanel extends ConsumerWidget {
       const Padding(
         padding: EdgeInsets.fromLTRB(12, 16, 12, 16),
         child: Text(
-          '文档页面',
+          '页面',
           style: TextStyle(
-            fontSize: 12,
+            fontSize: 15,
             fontWeight: FontWeight.w600,
             color: EditorColors.secondary,
           ),
@@ -559,15 +576,15 @@ class _PagePanel extends ConsumerWidget {
                     : () => ref.read(documentProvider.notifier).goToPage(index),
                 child: AnimatedContainer(
                   duration: motionDuration(context),
-                  padding: const EdgeInsets.all(12),
+                  padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
                     color: index == state.page
-                        ? EditorColors.surface
+                        ? EditorColors.selection
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: index == state.page
-                          ? EditorColors.border
+                          ? EditorColors.focus
                           : Colors.transparent,
                     ),
                   ),
@@ -586,12 +603,12 @@ class _PagePanel extends ConsumerWidget {
                           children: [
                             Text(
                               '第 ${index + 1} 页',
-                              style: const TextStyle(fontSize: 12),
+                              style: const TextStyle(fontSize: 14),
                             ),
                             Text(
                               '${state.document!.pages[index].objects.length} 个对象',
                               style: const TextStyle(
-                                fontSize: 10,
+                                fontSize: 12,
                                 color: EditorColors.muted,
                               ),
                             ),
@@ -602,7 +619,7 @@ class _PagePanel extends ConsumerWidget {
                         const Icon(
                           Icons.circle,
                           size: 5,
-                          color: EditorColors.text,
+                          color: EditorColors.focus,
                         ),
                     ],
                   ),
@@ -1019,7 +1036,10 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
   @override
   Widget build(BuildContext context) => Material(
     color: EditorColors.surface,
-    borderRadius: BorderRadius.circular(14),
+    shape: RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(18),
+      side: const BorderSide(color: EditorColors.border),
+    ),
     child: ListView(
       padding: const EdgeInsets.all(20),
       children: [
@@ -1029,7 +1049,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
             const SizedBox(width: 8),
             Text(
               widget.state.selected?.kind == 'image' ? '图片属性' : '文字属性',
-              style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
             ),
           ],
         ),
@@ -1058,7 +1078,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                     SizedBox(height: 8),
                     Text(
                       '将鼠标移到文字上，点击后即可修改。',
-                      style: TextStyle(fontSize: 12, color: EditorColors.muted),
+                      style: TextStyle(fontSize: 14, color: EditorColors.muted),
                     ),
                   ],
                 )
@@ -1069,7 +1089,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                     Text(
                       widget.state.selected!.kind == 'image' ? '图片对象' : '文字内容',
                       style: const TextStyle(
-                        fontSize: 12,
+                        fontSize: 14,
                         color: EditorColors.secondary,
                       ),
                     ),
@@ -1095,7 +1115,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                         dense: true,
                         title: const Text(
                           '缩小字号以适应',
-                          style: TextStyle(fontSize: 12),
+                          style: TextStyle(fontSize: 14),
                         ),
                         value: shrinkToFit,
                         onChanged: widget.state.busy
@@ -1105,36 +1125,78 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                                 rememberOptions();
                               },
                       ),
-                      SizedBox(
-                        width: double.infinity,
-                        child: OutlinedButton.icon(
-                          onPressed: widget.state.busy ? null : chooseFont,
-                          icon: const Icon(
-                            Icons.font_download_outlined,
-                            size: 16,
+                      Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                backgroundColor: fontPath == null
+                                    ? EditorColors.selection
+                                    : null,
+                                foregroundColor: fontPath == null
+                                    ? EditorColors.focus
+                                    : EditorColors.secondary,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                textStyle: const TextStyle(
+                                  fontFamily: 'FolinqSans',
+                                  fontSize: 12,
+                                ),
+                                side: BorderSide(
+                                  color: fontPath == null
+                                      ? EditorColors.focus.withValues(alpha: .5)
+                                      : EditorColors.border,
+                                ),
+                              ),
+                              onPressed: widget.state.busy ? null : chooseFont,
+                              icon: const Icon(
+                                Icons.font_download_outlined,
+                                size: 17,
+                              ),
+                              label: Text(
+                                fontPath == null
+                                    ? '使用原字体'
+                                    : File(fontPath!).uri.pathSegments.last,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                           ),
-                          label: Text(
-                            fontPath == null
-                                ? '使用原字体 · 点击更换'
-                                : File(fontPath!).uri.pathSegments.last,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                ),
+                                textStyle: const TextStyle(
+                                  fontFamily: 'FolinqSans',
+                                  fontSize: 12,
+                                ),
+                              ),
+                              onPressed: widget.state.busy
+                                  ? null
+                                  : useChineseFont,
+                              icon: const Icon(Icons.translate, size: 17),
+                              label: const Text(
+                                '内置中文字体',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
                           ),
-                        ),
+                        ],
                       ),
                       if (fontPath != null)
                         TextButton(
-                          onPressed: () {
-                            setState(() => fontPath = null);
-                            rememberOptions();
-                          },
+                          onPressed: widget.state.busy
+                              ? null
+                              : () {
+                                  setState(() => fontPath = null);
+                                  rememberOptions();
+                                },
                           child: const Text('恢复原字体'),
-                        ),
-                      if (widget.state.selected!.kind == 'text')
-                        TextButton.icon(
-                          onPressed: widget.state.busy ? null : useChineseFont,
-                          icon: const Icon(Icons.translate, size: 16),
-                          label: const Text('使用内置中文字体'),
                         ),
                       const SizedBox(height: 16),
                       Row(
@@ -1149,7 +1211,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                             child: Text(
                               '原区域布局校验 · 保存后重开验证',
                               style: TextStyle(
-                                fontSize: 11,
+                                fontSize: 12,
                                 color: EditorColors.muted,
                               ),
                             ),
@@ -1178,6 +1240,9 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                                           },
                                         }),
                                       ),
+                            style: FilledButton.styleFrom(
+                              minimumSize: const Size.fromHeight(42),
+                            ),
                             child: const Text('应用修改'),
                           ),
                         ),
@@ -1196,7 +1261,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                         child: Text(
                           '这是 OCR 搜索文字层。修改它不会改变扫描图像中的可见文字。',
                           style: TextStyle(
-                            fontSize: 11,
+                            fontSize: 12,
                             color: EditorColors.muted,
                           ),
                         ),
@@ -1241,7 +1306,7 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                     const SizedBox(height: 8),
                     Row(
                       children: [
-                        const Text('移动', style: TextStyle(fontSize: 11)),
+                        const Text('移动', style: TextStyle(fontSize: 12)),
                         const Spacer(),
                         for (final direction in [
                           (Icons.chevron_left, -5.0, 0.0, '向左移动'),
@@ -1265,27 +1330,46 @@ class _PropertiesPanelState extends ConsumerState<PropertiesPanel> {
                 ),
         ),
         const SizedBox(height: 24),
-        const Divider(height: 1),
-        const SizedBox(height: 16),
-        const Text(
-          '编辑提示',
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w500,
-            color: EditorColors.secondary,
+        Container(
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: EditorColors.selection,
+            borderRadius: BorderRadius.circular(14),
           ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          widget.state.selected?.kind == 'image'
-              ? '拖动图片可移动位置，拖动四角手柄可调整大小。修改后按 Ctrl+S 保存到源 PDF。'
-              : '可拖动文字或四角手柄调整位置和大小。支持字体包含的新字符，缺字时可选择内置中文字体。',
-          style: const TextStyle(fontSize: 11, color: EditorColors.muted),
-        ),
-        const SizedBox(height: 12),
-        const Text(
-          '扫描文字和已签名文档暂不支持修改。',
-          style: TextStyle(fontSize: 11, color: EditorColors.muted),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Row(
+                children: [
+                  Icon(
+                    Icons.lightbulb_outline,
+                    color: EditorColors.focus,
+                    size: 22,
+                  ),
+                  SizedBox(width: 8),
+                  Text(
+                    '编辑提示',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: EditorColors.focus,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                widget.state.selected?.kind == 'image'
+                    ? '拖动图片可移动位置，拖动四角手柄可调整大小。修改后按 Ctrl+S 保存到源 PDF。'
+                    : '可拖动文字或四角手柄调整位置和大小。支持字体包含的新字符，缺字时可选择内置中文字体。',
+                style: const TextStyle(fontSize: 12, color: EditorColors.muted),
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                '扫描文字和已签名文档暂不支持修改。',
+                style: TextStyle(fontSize: 12, color: EditorColors.muted),
+              ),
+            ],
+          ),
         ),
       ],
     ),

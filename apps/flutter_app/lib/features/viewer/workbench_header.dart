@@ -30,10 +30,10 @@ class WorkbenchHeader extends StatelessWidget {
       final actions = Wrap(
         alignment: WrapAlignment.end,
         crossAxisAlignment: WrapCrossAlignment.center,
-        spacing: 6,
+        spacing: 12,
         runSpacing: 4,
         children: [
-          TextButton.icon(
+          OutlinedButton.icon(
             onPressed: state.busy ? null : onOpen,
             icon: const Icon(Icons.folder_open_outlined, size: 17),
             label: const Text('打开 PDF'),
@@ -44,7 +44,7 @@ class WorkbenchHeader extends StatelessWidget {
               onPressed: state.busy ? null : onHistory,
               icon: const Icon(Icons.history, size: 20),
             ),
-          TextButton.icon(
+          OutlinedButton.icon(
             onPressed: document == null || state.busy ? null : onSave,
             icon: const Icon(Icons.save_outlined, size: 16),
             label: const Text('保存'),
@@ -56,10 +56,15 @@ class WorkbenchHeader extends StatelessWidget {
           ),
         ],
       );
-      return Padding(
+      return Container(
+        margin: const EdgeInsets.fromLTRB(18, 12, 18, 0),
+        decoration: const BoxDecoration(
+          color: EditorColors.surface,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+        ),
         padding: EdgeInsets.symmetric(
-          horizontal: compact ? 12 : 20,
-          vertical: 8,
+          horizontal: compact ? 10 : 20,
+          vertical: 12,
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -68,18 +73,6 @@ class WorkbenchHeader extends StatelessWidget {
               constraints: const BoxConstraints(minHeight: 40),
               child: Row(
                 children: [
-                  if (state.document != null) ...[
-                    Tooltip(
-                      message: showingHome ? '返回编辑' : '项目 / 历史',
-                      child: TextButton.icon(
-                        key: const ValueKey('workspace-back'),
-                        onPressed: state.busy ? null : onNavigate,
-                        icon: const Icon(Icons.arrow_back, size: 18),
-                        label: Text(showingHome ? '返回编辑' : '返回项目'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                  ],
                   Tooltip(
                     message: '关于 ${AppBrand.name}',
                     child: TextButton(
@@ -97,13 +90,33 @@ class WorkbenchHeader extends StatelessWidget {
                             const SizedBox(width: 8),
                             const Text(
                               AppBrand.name,
-                              style: TextStyle(fontWeight: FontWeight.w600),
+                              style: TextStyle(
+                                fontSize: 20,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                           ],
                         ],
                       ),
                     ),
                   ),
+                  if (!compact)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 16),
+                      child: SizedBox(height: 24, child: VerticalDivider()),
+                    ),
+                  if (state.document != null) ...[
+                    Tooltip(
+                      message: showingHome ? '返回编辑' : '项目 / 历史',
+                      child: TextButton.icon(
+                        key: const ValueKey('workspace-back'),
+                        onPressed: state.busy ? null : onNavigate,
+                        icon: const Icon(Icons.arrow_back, size: 18),
+                        label: Text(showingHome ? '返回编辑' : '返回项目'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                  ],
                   if (!compact) const SizedBox(width: 16),
                   const SizedBox(width: 8),
                   Expanded(
@@ -112,7 +125,7 @@ class WorkbenchHeader extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
-                        fontSize: 12,
+                        fontSize: 13,
                         color: EditorColors.secondary,
                       ),
                     ),

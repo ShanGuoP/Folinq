@@ -178,7 +178,7 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
   Widget build(BuildContext context) {
     final disabled = busy || ref.watch(documentProvider).busy;
     return Padding(
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(MediaQuery.sizeOf(context).width < 900 ? 20 : 36),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -187,7 +187,7 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
               const Expanded(
                 child: Text(
                   '最近的文档',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600),
+                  style: TextStyle(fontSize: 30, fontWeight: FontWeight.w700),
                 ),
               ),
               IconButton(
@@ -199,29 +199,55 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
               ),
             ],
           ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 10,
-            runSpacing: 8,
-            children: [
-              FilledButton.icon(
-                onPressed: disabled ? null : () => nameProject(),
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: const Text('新建项目'),
-              ),
-              OutlinedButton.icon(
-                onPressed: disabled ? null : widget.onOpen,
-                icon: const Icon(Icons.folder_open_outlined),
-                label: const Text('打开独立 PDF'),
-              ),
-              const NewDocumentButton(),
-              const ImportDocumentButton(),
-            ],
+          const SizedBox(height: 4),
+          const Text(
+            '管理你的项目与 PDF，开启高效的文档工作流。',
+            style: TextStyle(fontSize: 15, color: EditorColors.muted),
+          ),
+          const SizedBox(height: 24),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final columns = constraints.maxWidth >= 1000
+                  ? 4
+                  : constraints.maxWidth >= 520
+                  ? 2
+                  : 1;
+              final width =
+                  (constraints.maxWidth - (columns - 1) * 16) / columns;
+              final actions = <Widget>[
+                LibraryAction(
+                  icon: Icons.add,
+                  label: '新建项目',
+                  primary: true,
+                  onPressed: disabled ? null : () => nameProject(),
+                ),
+                LibraryAction(
+                  icon: Icons.folder_open_outlined,
+                  label: '打开独立 PDF',
+                  accent: const Color(0xff176bff),
+                  onPressed: disabled ? null : widget.onOpen,
+                ),
+                const NewDocumentButton(library: true),
+                const ImportDocumentButton(library: true),
+              ];
+              return Wrap(
+                spacing: 16,
+                runSpacing: 12,
+                children: [
+                  for (final action in actions)
+                    SizedBox(width: width, height: 76, child: action),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 18),
           TextField(
             decoration: const InputDecoration(
-              prefixIcon: Icon(Icons.search),
+              prefixIcon: Icon(Icons.search, size: 24),
+              contentPadding: EdgeInsets.symmetric(
+                horizontal: 22,
+                vertical: 20,
+              ),
               hintText: '搜索项目或 PDF 名称',
             ),
             onChanged: (value) => setState(() => query = value.toLowerCase()),
@@ -316,15 +342,15 @@ class _ProjectHomeState extends ConsumerState<ProjectHome> {
                             )
                           : LayoutBuilder(
                               builder: (context, constraints) {
-                                final columns = (constraints.maxWidth / 190)
+                                final columns = (constraints.maxWidth / 270)
                                     .floor()
                                     .clamp(1, 12);
                                 return GridView.builder(
                                   gridDelegate:
                                       SliverGridDelegateWithFixedCrossAxisCount(
                                         crossAxisCount: columns,
-                                        mainAxisExtent: 252,
-                                        crossAxisSpacing: 18,
+                                        mainAxisExtent: 290,
+                                        crossAxisSpacing: 22,
                                         mainAxisSpacing: 20,
                                       ),
                                   itemCount: projects.length + documents.length,
@@ -533,59 +559,77 @@ class _LibraryCard extends StatelessWidget {
   Widget build(BuildContext context) => Material(
     color: Colors.transparent,
     borderRadius: BorderRadius.circular(10),
-    child: InkWell(
-      borderRadius: BorderRadius.circular(10),
-      onTap: onTap,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Container(
-              width: double.infinity,
-              decoration: BoxDecoration(
-                color: const Color(0xfff8f8fa),
-                border: Border.all(color: const Color(0xffe2e3e9)),
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: cover,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: Padding(
-                  padding: const EdgeInsets.only(left: 4),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Tooltip(
-                        message: title,
-                        child: Text(
-                          title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(fontWeight: FontWeight.w500),
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        subtitle,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 11,
-                          color: EditorColors.muted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              SizedBox(width: 32, height: 44, child: menu),
-            ],
+    child: Ink(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: EditorColors.surface,
+        border: Border.all(color: EditorColors.border),
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: const [
+          BoxShadow(
+            color: EditorColors.shadow,
+            blurRadius: 20,
+            offset: Offset(0, 6),
           ),
         ],
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Container(
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: const Color(0xfff0f2f7),
+                  border: Border.all(color: const Color(0xffe2e3e9)),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: cover,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 4),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Tooltip(
+                          message: title,
+                          child: Text(
+                            title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          subtitle,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: EditorColors.muted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                SizedBox(width: 32, height: 44, child: menu),
+              ],
+            ),
+          ],
+        ),
       ),
     ),
   );

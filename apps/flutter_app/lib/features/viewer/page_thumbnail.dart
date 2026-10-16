@@ -40,8 +40,8 @@ class _PageThumbnailState extends State<PageThumbnail> {
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 34,
-    height: 48,
+    width: 50,
+    height: 68,
     child: FutureBuilder<String>(
       future: image,
       builder: (context, snapshot) => snapshot.hasData
