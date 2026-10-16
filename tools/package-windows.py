@@ -71,7 +71,10 @@ def main():
         '点击工作台左上角的图标或 Folinq 页翎，可查看版本、访问或复制项目开源地址。\n'
         '开源地址：https://github.com/ShanGuoP/Folinq\n\n'
         '支持拖入 PDF 打开、删除最近记录（保留源文件）、可编辑 Word 导出、输出目录记忆。\n'
-        '复杂 PDF 的 Word 排版仍需校对；纯扫描页需先 OCR。\n', encoding='utf-8-sig')
+        '复杂 PDF 的 Word 排版仍需校对。\n'
+        '扫描页可在 Word、Markdown、TXT 导出窗口启用在线 PaddleOCR，填写自己的服务地址和 Token。\n'
+        '在线识别默认关闭，开启后会上传所选页面，可能消耗服务额度。\n'
+        '在线 Markdown 含配图并保存为 ZIP；在线 Word/TXT 仅导出识别文字。\n', encoding='utf-8-sig')
     info = {'name': 'Folinq 页翎', 'created_at': now.isoformat(),
             'layout': 'Folinq.exe + runtime/', 'crt': str(crt.relative_to(vs)),
             'engine_sha256': sha256((runtime / 'app_api.dll').read_bytes()),

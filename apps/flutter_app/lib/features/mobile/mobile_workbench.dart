@@ -8,7 +8,8 @@ import '../../shared/app_brand.dart';
 import '../../shared/editor_theme.dart';
 import '../documents/document_controller.dart';
 import '../viewer/about_dialog.dart';
-import '../viewer/workbench.dart' show PageCanvas, PropertiesPanel;
+import '../viewer/workbench.dart' show PropertiesPanel;
+import 'mobile_continuous_canvas.dart';
 import 'mobile_library.dart';
 import 'mobile_export_sheet.dart';
 
@@ -373,12 +374,10 @@ class _MobileWorkbenchState extends ConsumerState<MobileWorkbench> {
                               ),
                             ),
                           Expanded(
-                            child: PageCanvas(
+                            child: MobileContinuousCanvas(
                               key: ValueKey(document.id),
                               state: state,
-                              allowSelection: editing,
-                              allowObjectDrag: false,
-                              maxDetailWidth: 2048,
+                              editing: editing,
                             ),
                           ),
                         ],
