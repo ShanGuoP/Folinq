@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import '../../shared/app_brand.dart';
 import '../../shared/editor_theme.dart';
 import '../documents/document_controller.dart';
+import 'about_dialog.dart';
 
 class WorkbenchHeader extends StatelessWidget {
   const WorkbenchHeader({
@@ -78,19 +80,31 @@ class WorkbenchHeader extends StatelessWidget {
                     ),
                     const SizedBox(width: 12),
                   ],
-                  const Icon(
-                    Icons.picture_as_pdf_outlined,
-                    size: 22,
-                    color: EditorColors.text,
-                  ),
-                  if (!compact) ...[
-                    const SizedBox(width: 8),
-                    const Text(
-                      'Folinq 页翎',
-                      style: TextStyle(fontWeight: FontWeight.w600),
+                  Tooltip(
+                    message: '关于 ${AppBrand.name}',
+                    child: TextButton(
+                      key: const ValueKey('app-about-button'),
+                      onPressed: () => showFolinqAbout(context),
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                        foregroundColor: EditorColors.text,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const AppIcon(),
+                          if (!compact) ...[
+                            const SizedBox(width: 8),
+                            const Text(
+                              AppBrand.name,
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
-                    const SizedBox(width: 20),
-                  ],
+                  ),
+                  if (!compact) const SizedBox(width: 16),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(

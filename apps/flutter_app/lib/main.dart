@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'core/rust/frb_generated.dart';
 import 'shared/editor_theme.dart';
+import 'shared/app_brand.dart';
 
 Future<void> main(List<String> arguments) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,7 +39,7 @@ class PdfEditorApp extends StatelessWidget {
   final List<String> startupPaths;
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'Folinq 页翎',
+    title: AppBrand.name,
     debugShowCheckedModeBanner: false,
     theme: editorTheme(),
     home: startupError == null

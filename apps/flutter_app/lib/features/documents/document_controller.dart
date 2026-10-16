@@ -551,13 +551,20 @@ class DocumentController extends Notifier<DocumentState> {
               expectedVersion: BigInt.from(updated.version),
               pageIndex: nextPage,
             );
+      final insertedImage =
+          command == 'object_operation' &&
+          (jsonDecode(value) as Map)['kind'] == 'insert_image';
       state = DocumentState(
         document: updated,
         page: nextPage,
         preview: preview,
-        selected: updated.pages[nextPage].objects
-            .where((object) => object.id == previous.selected?.id)
-            .firstOrNull,
+        selected: insertedImage
+            ? updated.pages[nextPage].objects
+                  .where((object) => object.kind == 'image')
+                  .lastOrNull
+            : updated.pages[nextPage].objects
+                  .where((object) => object.id == previous.selected?.id)
+                  .firstOrNull,
       );
       ref.read(openDocumentsProvider.notifier).put(updated);
     } catch (error) {
@@ -853,6 +860,7 @@ class DocumentController extends Notifier<DocumentState> {
 
 String readableError(String error) {
   const messages = {
+    'DOCUMENT_ALREADY_OPEN': '这份工作记录正在另一个窗口中使用。请先在该窗口关闭文档，再继续恢复。',
     'EDITABLE_TEXT_REQUIRED': '所选页面只有扫描图片。请先使用离线 OCR 并加入可搜索文字层，再导出可编辑 Word。',
     'DRAFT_STATE_LIMIT': '草稿总量超过 8 MiB，请先应用部分修改或缩短输入。',
     'FONT_MISSING_GLYPH': '当前字体缺少新文字的字形，请在文字属性中选择支持这些字符的字体。',

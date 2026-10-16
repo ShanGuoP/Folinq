@@ -115,6 +115,12 @@ add_executable(folinq_launcher WIN32
   "${CMAKE_CURRENT_SOURCE_DIR}/runner/Runner.rc")
 target_compile_features(folinq_launcher PRIVATE cxx_std_17)
 target_compile_definitions(folinq_launcher PRIVATE UNICODE _UNICODE NOMINMAX)
+target_compile_definitions(folinq_launcher PRIVATE
+  "FLUTTER_VERSION=\"${FLUTTER_VERSION}\""
+  "FLUTTER_VERSION_MAJOR=${FLUTTER_VERSION_MAJOR}"
+  "FLUTTER_VERSION_MINOR=${FLUTTER_VERSION_MINOR}"
+  "FLUTTER_VERSION_PATCH=${FLUTTER_VERSION_PATCH}"
+  "FLUTTER_VERSION_BUILD=${FLUTTER_VERSION_BUILD}")
 target_include_directories(folinq_launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/runner")
 target_link_libraries(folinq_launcher PRIVATE user32)
 set_target_properties(folinq_launcher PROPERTIES

@@ -38,6 +38,13 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
   String? message;
   bool succeeded = false;
   String mode = 'layout';
+  bool removeMargins = false;
+  @override
+  void initState() {
+    super.initState();
+    if (widget.format == 'md') mode = 'structured';
+  }
+
   @override
   void dispose() {
     range.dispose();
@@ -137,6 +144,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
           value: jsonEncode({
             'format': widget.format,
             'mode': mode,
+            'remove_repeated_margins': removeMargins && !perPage,
             'pages': jobs[i],
             'destination': paths[i],
           }),
@@ -218,12 +226,22 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                     initialValue: mode,
                     decoration: const InputDecoration(labelText: '导出方式'),
                     items: [
+                      if (widget.format == 'md')
+                        const DropdownMenuItem(
+                          value: 'structured',
+                          child: Text('结构化 Markdown（推荐）'),
+                        ),
                       DropdownMenuItem(
                         value: 'layout',
                         child: Text(
-                          widget.format == 'docx' ? '可编辑文字与版式' : '页面图片与版式',
+                          widget.format == 'docx' ? '保留版式（可编辑）' : '页面图片与版式',
                         ),
                       ),
+                      if (widget.format == 'docx')
+                        const DropdownMenuItem(
+                          value: 'flow',
+                          child: Text('便于编辑（自动排版）'),
+                        ),
                       const DropdownMenuItem(
                         value: 'text',
                         child: Text('仅提取文字'),
@@ -235,13 +253,27 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    mode == 'layout'
+                    mode == 'structured'
+                        ? '导出可编辑正文、标题、列表、表格和原有图片，按阅读顺序整理。请将 Markdown 与配套图片文件夹一起移动。复杂表格需要支持相应表格格式的阅读器。扫描页需先完成 OCR。'
+                        : mode == 'flow'
+                        ? '合并连续正文，使用可自动换行的段落、标题、列表和原生表格，保留原有图片。便于继续修改，分页和位置可能与 PDF 不同。扫描页需先完成 OCR。'
+                        : mode == 'layout'
                         ? (widget.format == 'md'
                               ? '每页保存为高清图片，保留表格、图片和文字外观。请将 Markdown 与配套资源文件夹一起移动。'
                               : '文字、字号、字体、颜色及位置转换为可编辑的 Word 内容，同时保留原有图片和可识别的表格。扫描页需先完成 OCR。')
                         : '仅提取文字内容，不保留图片、表格结构和原始排版。',
                     style: const TextStyle(fontSize: 12),
                   ),
+                  if (mode == 'structured' || mode == 'flow')
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('忽略重复页眉页脚'),
+                      subtitle: const Text('适用于多页导出；按页拆分时保留。'),
+                      value: removeMargins,
+                      onChanged: running || split
+                          ? null
+                          : (value) => setState(() => removeMargins = value!),
+                    ),
                 ],
               ],
               if (running) ...[

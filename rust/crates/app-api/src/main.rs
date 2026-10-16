@@ -5,6 +5,18 @@ use std::{env, fs, path::Path};
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        Some("export") if args.len() == 5 => {
+            let workspace = tempfile::tempdir()?;
+            let session = Session::open(Path::new(&args[1]), workspace.path())?;
+            session.export_with_options(
+                session.info.version,
+                &args[2],
+                Path::new(&args[4]),
+                &[],
+                &args[3],
+                false,
+            )?;
+        }
         Some("docx") if args.len() == 3 => {
             let destination = Path::new(&args[2]);
             anyhow::ensure!(!destination.exists(), "Destination exists");
@@ -57,7 +69,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&session.info)?);
         }
         _ => anyhow::bail!(
-            "Usage: pdf-editor fixture <new.pdf> | inspect <input.pdf> | render <input.pdf> <page.png> | replace <input.pdf> <exact-original-text> <replacement> <new.pdf>"
+            "Usage: pdf-editor export <input.pdf> <format> <mode> <new-file> | docx <input.pdf> <new.docx> | fixture <new.pdf> | inspect <input.pdf> | render <input.pdf> <page.png> [page-index] | replace <input.pdf> <exact-original-text> <replacement> <new.pdf>"
         ),
     }
     Ok(())

@@ -293,6 +293,23 @@ class _DocumentToolStripState extends ConsumerState<DocumentToolStrip> {
     final controller = ref.read(documentProvider.notifier);
     try {
       switch (action) {
+        case 'annotations':
+          await showDialog<void>(
+            context: context,
+            builder: (_) => const AnnotationsDialog(),
+          );
+        case 'redact':
+          if (!await controller.applyPendingDrafts() || !context.mounted) {
+            return;
+          }
+          final snapshot = ref.read(documentProvider);
+          if (snapshot.preview != null) {
+            await showDialog<void>(
+              context: context,
+              barrierDismissible: false,
+              builder: (_) => RedactionDialog(snapshot: snapshot),
+            );
+          }
         case 'draw':
           final strokes = await showDialog<List<dynamic>>(
             context: context,
@@ -562,53 +579,50 @@ class _DocumentToolStripState extends ConsumerState<DocumentToolStrip> {
             icon: const Icon(Icons.note_add_outlined, size: 16),
             label: const Text('新建'),
           ),
-          for (final item in [
-            ('search', Icons.search, '搜索'),
-            ('copy', Icons.copy_outlined, '复制'),
-            ('insert_text', Icons.text_fields, '添加文字'),
-            ('insert_image', Icons.image_outlined, '添加图片'),
-            ('comment', Icons.comment_outlined, '注释'),
-          ])
-            TextButton.icon(
-              onPressed: busy ? null : () => action(context, ref, item.$1),
-              icon: Icon(item.$2, size: 16),
-              label: Text(item.$3),
-            ),
           TextButton.icon(
-            onPressed: busy ? null : () => action(context, ref, 'draw'),
-            icon: const Icon(Icons.draw_outlined, size: 16),
-            label: const Text('绘画 / 手签'),
+            onPressed: busy ? null : () => action(context, ref, 'search'),
+            icon: const Icon(Icons.search, size: 16),
+            label: const Text('搜索'),
           ),
-          TextButton.icon(
-            onPressed: busy
-                ? null
-                : () async {
-                    final controller = ref.read(documentProvider.notifier);
-                    if (!await controller.applyPendingDrafts() ||
-                        !context.mounted) {
-                      return;
-                    }
-                    final snapshot = ref.read(documentProvider);
-                    if (snapshot.preview != null) {
-                      await showDialog<void>(
-                        context: context,
-                        barrierDismissible: false,
-                        builder: (_) => RedactionDialog(snapshot: snapshot),
-                      );
-                    }
-                  },
-            icon: const Icon(Icons.hide_image_outlined, size: 16),
-            label: const Text('脱敏副本'),
-          ),
-          TextButton.icon(
-            onPressed: busy
-                ? null
-                : () => showDialog<void>(
-                    context: context,
-                    builder: (_) => const AnnotationsDialog(),
+          PopupMenuButton<String>(
+            tooltip: '编辑',
+            position: PopupMenuPosition.under,
+            enabled: !busy,
+            onSelected: (value) => action(context, ref, value),
+            itemBuilder: (_) => [
+              for (final item in [
+                ('copy', Icons.copy_outlined, '复制'),
+                ('insert_text', Icons.text_fields, '添加文字'),
+                ('insert_image', Icons.image_outlined, '添加图片'),
+                ('comment', Icons.comment_outlined, '注释'),
+                ('draw', Icons.draw_outlined, '绘画 / 手签'),
+                ('annotations', Icons.speaker_notes_outlined, '管理批注'),
+                ('redact', Icons.hide_image_outlined, '脱敏副本'),
+              ])
+                PopupMenuItem(
+                  value: item.$1,
+                  child: Row(
+                    children: [
+                      Icon(item.$2, size: 18),
+                      const SizedBox(width: 12),
+                      Text(item.$3),
+                    ],
                   ),
-            icon: const Icon(Icons.speaker_notes_outlined, size: 16),
-            label: const Text('管理批注'),
+                ),
+            ],
+            child: const Padding(
+              padding: EdgeInsets.all(10),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.edit_outlined, size: 16),
+                  SizedBox(width: 6),
+                  Text('编辑'),
+                  SizedBox(width: 4),
+                  Icon(Icons.keyboard_arrow_down, size: 16),
+                ],
+              ),
+            ),
           ),
           PopupMenuButton<String>(
             tooltip: '页面管理',

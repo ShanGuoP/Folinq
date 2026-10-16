@@ -29,7 +29,7 @@ class PageInfo {
           TextObject(item as Map<String, dynamic>, kind: 'image'),
         for (final item in json['text_objects'] as List)
           TextObject(item as Map<String, dynamic>),
-      ],
+      ]..sort((a, b) => a.objectIndex.compareTo(b.objectIndex)),
       textContent = json['text_content'] as String? ?? '';
   final String id;
   final double width, height;

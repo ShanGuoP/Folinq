@@ -3,10 +3,8 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import struct
 import sys
 import urllib.request
-import zlib
 
 ROOT = Path(__file__).resolve().parent.parent
 REVISION = "2894aab31764f10f29c421bdfd2340d3b382d384"
@@ -68,30 +66,17 @@ def build_font(root, cache):
     (directory / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
 
-def build_icon(root):
-    # Original source-drawn page icon. ICO contains a standard RGBA PNG.
-    path = root / "apps/flutter_app/windows/runner/resources/app_icon.ico"
-    if path.is_file():
-        return
-    size = 64
-    rows = bytearray()
-    for y in range(size):
-        rows.append(0)
-        for x in range(size):
-            color = (0, 0, 0, 0)
-            if 11 <= x < 53 and 5 <= y < 59:
-                color = (241, 244, 247, 255)
-                if x in (11, 52) or y in (5, 58):
-                    color = (68, 79, 94, 255)
-                if 21 <= x < 43 and (18 <= y < 22 or 29 <= y < 33 or 40 <= y < 44):
-                    color = (68, 79, 94, 255)
-            rows.extend(color)
-    def chunk(kind, data):
-        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
-    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(bytes(rows), 9)) + chunk(b"IEND", b"")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(struct.pack("<HHH", 0, 1, 1) + struct.pack("<BBBBHHII", size, size, 0, 0, 1, 32, len(png), 22) + png)
+def check_brand_assets(root):
+    # The user-provided artwork and multi-resolution ICO are source assets.
+    # Do not silently substitute the former generic icon on a clean checkout.
+    assets = {
+        "apps/flutter_app/assets/branding/folinq.png": b"\x89PNG\r\n\x1a\n",
+        "apps/flutter_app/windows/runner/resources/app_icon.ico": b"\x00\x00\x01\x00",
+    }
+    for relative, signature in assets.items():
+        path = root / relative
+        if not path.is_file() or not path.read_bytes().startswith(signature):
+            raise RuntimeError(f"Missing or invalid brand asset: {relative}")
 
 
 if __name__ == "__main__":
@@ -100,5 +85,5 @@ if __name__ == "__main__":
     parser.add_argument("--cache", type=Path, default=ROOT / ".tools/resource-cache")
     args = parser.parse_args()
     build_font(args.root, args.cache)
-    build_icon(args.root)
+    check_brand_assets(args.root)
     print("Font, license, manifest and Windows icon are ready.")

@@ -204,12 +204,15 @@ pub fn document_command(
                     .cloned()
                     .unwrap_or(serde_json::json!([])),
             )?;
-            session.export_with_mode(
+            session.export_with_options(
                 expected_version,
                 request["format"].as_str().context("INVALID_EXPORT")?,
                 Path::new(request["destination"].as_str().context("INVALID_EXPORT")?),
                 &pages,
                 request["mode"].as_str().unwrap_or("layout"),
+                request["remove_repeated_margins"]
+                    .as_bool()
+                    .unwrap_or(false),
             )?;
         }
         "redact_export" => {
@@ -402,10 +405,11 @@ pub fn close_document(document_id: String) -> Result<()> {
     );
     cancel_task(document_id.clone())?;
     // Wait for work already in progress; queued handles will see closed=true.
-    let _guard = entry
+    let mut guard = entry
         .session
         .lock()
         .map_err(|_| anyhow::anyhow!("SESSION_LOCK_POISONED"))?;
+    guard.release_ownership();
     // Keep membership reserved while an old operation finishes, so a restore
     // cannot create a second writer for the same workspace directory.
     sessions()
@@ -516,7 +520,7 @@ mod concurrency_tests {
             temp.path().join("sessions").to_string_lossy().into(),
         )?)?;
         let id = info["id"].as_str().unwrap();
-        for mode in ["layout", "text"] {
+        for mode in ["layout", "text", "flow"] {
             let destination = temp.path().join(format!("{mode}.docx"));
             document_command(id.into(), 0, "export".into(), String::new(),
                 serde_json::json!({"format":"docx","mode":mode,"destination":destination,"pages":[0]}).to_string())?;
@@ -529,6 +533,30 @@ mod concurrency_tests {
             assert_eq!(xml.contains("<w:framePr"), mode == "layout");
             assert!(!archive.file_names().any(|n| n.starts_with("word/media/")));
         }
+        let markdown = temp.path().join("structured.md");
+        let request = serde_json::json!({"format":"md","mode":"structured",
+            "remove_repeated_margins":true,"destination":markdown,"pages":[0]})
+        .to_string();
+        document_command(
+            id.into(),
+            0,
+            "export".into(),
+            String::new(),
+            request.clone(),
+        )?;
+        let original = fs::read_to_string(&markdown)?;
+        assert!(original.contains("Hello PDF Editor"));
+        assert!(original.contains("<!-- page 1 -->"));
+        assert!(!original.contains("!["));
+        assert!(!fs::read_dir(temp.path())?.any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains("assets")
+        }));
+        assert!(document_command(id.into(), 0, "export".into(), String::new(), request).is_err());
+        assert_eq!(fs::read_to_string(markdown)?, original);
         let invalid = temp.path().join("invalid.docx");
         assert!(
             document_command(

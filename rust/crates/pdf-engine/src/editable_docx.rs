@@ -2,7 +2,7 @@
 //! This module never renders a page into a background screenshot.
 use super::*;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     io::{Cursor, Write},
 };
 
@@ -22,6 +22,8 @@ struct Glyph {
     right: f32,
     baseline: f32,
     hidden: bool,
+    source_bounds: [u32; 4],
+    order: usize,
     style: Style,
 }
 #[derive(Clone, Debug)]
@@ -41,13 +43,21 @@ struct Vector {
     rectangle: Option<[f32; 4]>,
 }
 struct Picture {
+    order: usize,
     x: f32,
     y: f32,
     width: f32,
     height: f32,
     png: Vec<u8>,
 }
+struct TextPaint {
+    key: [u32; 4],
+    bounds: [f32; 4],
+    order: usize,
+}
 struct Layout {
+    order: usize,
+    text_paints: Vec<TextPaint>,
     width: f32,
     height: f32,
     glyphs: Vec<Glyph>,
@@ -66,6 +76,15 @@ struct Grid {
     ys: Vec<f32>,
     rows: Vec<Vec<Cell>>,
     edges: HashSet<usize>,
+}
+
+fn bounds_key(b: &PdfRect) -> [u32; 4] {
+    [
+        b.left().value.to_bits(),
+        b.bottom().value.to_bits(),
+        b.right().value.to_bits(),
+        b.top().value.to_bits(),
+    ]
 }
 
 fn xml(value: &str) -> String {
@@ -136,12 +155,41 @@ fn graphics(
         depth <= 32 && layout.vectors.len() + layout.images.len() < 50000,
         "EXPORT_OBJECT_LIMIT"
     );
+    layout.order += 1;
+    let order = layout.order;
     if let Some(form) = object.as_x_object_form_object() {
         let mut parents = parents.to_vec();
         parents.push(form.matrix()?);
         for child in form.iter() {
             graphics(&child, page, document, &parents, layout, depth + 1)?;
         }
+    } else if let Some(text) = object.as_text_object() {
+        let b = text.bounds()?.to_rect();
+        let corners = [
+            (b.left().value, b.top().value),
+            (b.right().value, b.top().value),
+            (b.left().value, b.bottom().value),
+            (b.right().value, b.bottom().value),
+        ]
+        .into_iter()
+        .map(|(x, y)| point(page, x, y, parents))
+        .collect::<Result<Vec<_>>>()?;
+        layout.text_paints.push(TextPaint {
+            key: bounds_key(&b),
+            order,
+            bounds: [
+                corners.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
+                corners.iter().map(|p| p.1).fold(f32::INFINITY, f32::min),
+                corners
+                    .iter()
+                    .map(|p| p.0)
+                    .fold(f32::NEG_INFINITY, f32::max),
+                corners
+                    .iter()
+                    .map(|p| p.1)
+                    .fold(f32::NEG_INFINITY, f32::max),
+            ],
+        });
     } else if let Some(image) = object.as_image_object() {
         let bounds = rect(image.bounds()?.to_rect());
         let corners = [
@@ -173,6 +221,7 @@ fn graphics(
         let mut output = Cursor::new(Vec::new());
         raster.write_to(&mut output, image::ImageFormat::Png)?;
         layout.images.push(Picture {
+            order,
             x,
             y,
             width,
@@ -322,6 +371,8 @@ fn extract(bytes: &[u8], selected: &[u16]) -> Result<Vec<Layout>> {
             let text = page.text()?;
             ensure!(text.chars().len() <= 500_000, "EXPORT_TEXT_LIMIT");
             let mut layout = Layout {
+                order: 0,
+                text_paints: vec![],
                 width: page.width().value,
                 height: page.height().value,
                 glyphs: vec![],
@@ -373,6 +424,11 @@ fn extract(bytes: &[u8], selected: &[u16]) -> Result<Vec<Layout>> {
                     y,
                     right,
                     baseline,
+                    source_bounds: c
+                        .text_object()
+                        .and_then(|o| o.bounds().map(|b| bounds_key(&b.to_rect())))
+                        .unwrap_or([0; 4]),
+                    order: 0,
                     hidden: matches!(
                         c.render_mode(),
                         Ok(PdfPageTextRenderMode::Invisible
@@ -432,6 +488,28 @@ fn extract(bytes: &[u8], selected: &[u16]) -> Result<Vec<Layout>> {
                 );
                 for object in objects.iter() {
                     graphics(&object, &page, &document, &[transform], &mut layout, 0)?;
+                }
+            }
+            let mut paints: HashMap<[u32; 4], Vec<&TextPaint>> = HashMap::new();
+            for paint in &layout.text_paints {
+                paints.entry(paint.key).or_default().push(paint);
+            }
+            for glyph in &mut layout.glyphs {
+                if let Some(candidates) = paints.get(&glyph.source_bounds) {
+                    let x = (glyph.x + glyph.right) / 2.;
+                    let y = (glyph.y + glyph.baseline) / 2.;
+                    glyph.order = candidates
+                        .iter()
+                        .rev()
+                        .find(|p| {
+                            x >= p.bounds[0] - 1.
+                                && x <= p.bounds[2] + 1.
+                                && y >= p.bounds[1] - 1.
+                                && y <= p.bounds[3] + 1.
+                        })
+                        .or_else(|| candidates.first())
+                        .map(|p| p.order)
+                        .unwrap_or(0);
                 }
             }
             ensure!(
@@ -607,6 +685,9 @@ fn grids(layout: &Layout) -> Vec<Grid> {
 }
 
 fn runs(glyphs: &[&Glyph], scale: f32, fit_id: &mut u32) -> String {
+    styled_runs(glyphs, scale, fit_id, true)
+}
+fn styled_runs(glyphs: &[&Glyph], scale: f32, fit_id: &mut u32, fit_width: bool) -> String {
     let mut out = String::new();
     let mut index = 0;
     while index < glyphs.len() {
@@ -622,7 +703,11 @@ fn runs(glyphs: &[&Glyph], scale: f32, fit_id: &mut u32) -> String {
         // Preserve the original span's advance width even when Word substitutes
         // an unavailable PDF font. Text remains editable in the native run.
         let advance = twip((glyphs[end - 1].right - first.x).max(style.size * 0.2) * scale);
-        let fit = format!("<w:fitText w:val=\"{advance}\" w:id=\"{fit_id}\"/>");
+        let fit = if fit_width {
+            format!("<w:fitText w:val=\"{advance}\" w:id=\"{fit_id}\"/>")
+        } else {
+            String::new()
+        };
         out.push_str(&format!("<w:r><w:rPr><w:rFonts w:ascii=\"{0}\" w:hAnsi=\"{0}\" w:eastAsia=\"{0}\" w:cs=\"{0}\"/>{3}{4}<w:color w:val=\"{2}\"/><w:sz w:val=\"{1}\"/><w:szCs w:val=\"{1}\"/>{fit}</w:rPr><w:t xml:space=\"preserve\">{5}</w:t></w:r>",xml(&style.font),size,style.color,if style.bold{"<w:b/><w:bCs/>"}else{""},if style.italic{"<w:i/><w:iCs/>"}else{""},xml(&value)));
         index = end;
     }
@@ -646,7 +731,7 @@ fn lines(mut glyphs: Vec<&Glyph>) -> Vec<Vec<&Glyph>> {
     }
     result
 }
-fn table(grid: &Grid, layout: &Layout, scale: f32, fit_id: &mut u32) -> String {
+fn table(grid: &Grid, layout: &Layout, scale: f32, fit_id: &mut u32, floating: bool) -> String {
     let mut out = format!(
         "<w:tbl><w:tblPr><w:tblpPr w:horzAnchor=\"page\" w:vertAnchor=\"page\" w:tblpX=\"{}\" w:tblpY=\"{}\" w:leftFromText=\"0\" w:rightFromText=\"0\" w:topFromText=\"0\" w:bottomFromText=\"0\"/><w:tblW w:w=\"{}\" w:type=\"dxa\"/><w:tblBorders>",
         twip(grid.xs[0] * scale),
@@ -730,6 +815,19 @@ fn table(grid: &Grid, layout: &Layout, scale: f32, fit_id: &mut u32) -> String {
         out.push_str("</w:tr>");
     }
     out.push_str("</w:tbl>");
+    if !floating {
+        if let Some(start) = out.find("<w:tblpPr")
+            && let Some(end) = out[start..].find("/>")
+        {
+            out.replace_range(start..start + end + 2, "");
+        }
+        out = out.replace("w:hRule=\"exact\"", "w:hRule=\"atLeast\"");
+        while let Some(start) = out.find("<w:fitText") {
+            let end = out[start..].find("/>").unwrap() + start + 2;
+            out.replace_range(start..end, "");
+        }
+        out = out.replace("w:lineRule=\"exact\"", "w:lineRule=\"atLeast\"");
+    }
     out
 }
 
@@ -746,6 +844,25 @@ fn section(width: f32, height: f32, last: bool) -> String {
             "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"1\" w:lineRule=\"exact\"/>{properties}</w:pPr></w:p>"
         )
     }
+}
+
+fn picture_overlaps(p: &Picture, g: &Glyph) -> bool {
+    g.right > p.x
+        && g.x < p.x + p.width
+        && g.baseline + g.style.size * 0.2 > p.y
+        && g.y < p.y + p.height
+}
+
+// Floating text boxes share the drawing z-order with pictures. Ordinary frame
+// paragraphs alone cannot appear above a foreground DrawingML picture in Word.
+fn layered_box(content: &str, bounds: [f32; 4], order: usize) -> String {
+    let [x, y, w, h] = bounds;
+    let z = 251658240 + order;
+    format!(
+        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"1\" w:lineRule=\"exact\"/></w:pPr><w:r><w:pict><v:rect style=\"position:absolute;margin-left:{x}pt;margin-top:{y}pt;width:{}pt;height:{}pt;z-index:{z};mso-position-horizontal-relative:page;mso-position-vertical-relative:page\" filled=\"f\" stroked=\"f\"><v:textbox inset=\"0,0,0,0\"><w:txbxContent>{content}</w:txbxContent></v:textbox></v:rect></w:pict></w:r></w:p>",
+        w.max(1.),
+        h.max(1.)
+    )
 }
 
 pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
@@ -795,10 +912,46 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
                 twip(picture.width * scale) * 635,
                 twip(picture.height * scale) * 635,
             );
-            body.push_str(&format!("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"1\" w:lineRule=\"exact\"/></w:pPr><w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"0\" behindDoc=\"1\" locked=\"0\" layoutInCell=\"0\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{x}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{y}</wp:posOffset></wp:positionV><wp:extent cx=\"{w}\" cy=\"{h}\"/><wp:wrapNone/><wp:docPr id=\"{id}\" name=\"PDF image {id}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{id}\" name=\"Image {id}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"));
+            let z = 251658240 + picture.order;
+            let behind = if page.glyphs.iter().any(|g| picture_overlaps(picture, g)) {
+                0
+            } else {
+                1
+            };
+            body.push_str(&format!("<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"1\" w:lineRule=\"exact\"/></w:pPr><w:r><w:drawing><wp:anchor distT=\"0\" distB=\"0\" distL=\"0\" distR=\"0\" simplePos=\"0\" relativeHeight=\"{z}\" behindDoc=\"{behind}\" locked=\"0\" layoutInCell=\"0\" allowOverlap=\"1\"><wp:simplePos x=\"0\" y=\"0\"/><wp:positionH relativeFrom=\"page\"><wp:posOffset>{x}</wp:posOffset></wp:positionH><wp:positionV relativeFrom=\"page\"><wp:posOffset>{y}</wp:posOffset></wp:positionV><wp:extent cx=\"{w}\" cy=\"{h}\"/><wp:wrapNone/><wp:docPr id=\"{id}\" name=\"PDF image {id}\"/><wp:cNvGraphicFramePr/><a:graphic><a:graphicData uri=\"http://schemas.openxmlformats.org/drawingml/2006/picture\"><pic:pic><pic:nvPicPr><pic:cNvPr id=\"{id}\" name=\"Image {id}\"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed=\"rId{id}\"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x=\"0\" y=\"0\"/><a:ext cx=\"{w}\" cy=\"{h}\"/></a:xfrm><a:prstGeom prst=\"rect\"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"));
         }
         for grid in &grids {
-            body.push_str(&table(grid, page, scale, &mut fit_id));
+            let glyphs: Vec<_> = page
+                .glyphs
+                .iter()
+                .filter(|g| {
+                    let x = (g.x + g.right) / 2.;
+                    x >= grid.xs[0]
+                        && x <= *grid.xs.last().unwrap()
+                        && g.baseline >= grid.ys[0]
+                        && g.y < *grid.ys.last().unwrap()
+                })
+                .collect();
+            let layered = page.images.iter().any(|p| {
+                glyphs
+                    .iter()
+                    .any(|g| g.order > p.order && picture_overlaps(p, g))
+            });
+            if layered {
+                let content = table(grid, page, scale, &mut fit_id, false) + "<w:p/>";
+                body.push_str(&layered_box(
+                    &content,
+                    [
+                        grid.xs[0] * scale,
+                        grid.ys[0] * scale,
+                        (grid.xs.last().unwrap() - grid.xs[0]) * scale,
+                        (grid.ys.last().unwrap() - grid.ys[0]) * scale + 8.,
+                    ],
+                    glyphs.iter().map(|g| g.order).max().unwrap_or(0),
+                ));
+            } else {
+                body.push_str(&table(grid, page, scale, &mut fit_id, true));
+            }
         }
         let outside = page
             .glyphs
@@ -814,11 +967,16 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
             })
             .collect();
         for line in lines(outside) {
+            let layered = page
+                .images
+                .iter()
+                .any(|p| line.iter().any(|g| picture_overlaps(p, g)));
             // Keep separate columns apart instead of concatenating them into one paragraph.
             let mut start = 0;
             for end in 1..=line.len() {
                 if end < line.len()
                     && line[end].x - line[end - 1].right < line[end].style.size * 1.5
+                    && (!layered || line[end].order == line[end - 1].order)
                 {
                     continue;
                 }
@@ -826,6 +984,29 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
                 let size = glyphs.iter().map(|g| g.style.size).fold(1., f32::max);
                 let y = glyphs.iter().map(|g| g.y).fold(f32::INFINITY, f32::min);
                 let width = (glyphs.last().unwrap().right - glyphs[0].x + size * 0.4).max(size);
+                if page.images.iter().any(|p| {
+                    glyphs
+                        .iter()
+                        .any(|g| g.order > p.order && picture_overlaps(p, g))
+                }) {
+                    let content = format!(
+                        "<w:p><w:pPr><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"{}\" w:lineRule=\"exact\"/></w:pPr>{}</w:p>",
+                        twip(size * 1.1 * scale),
+                        runs(glyphs, scale, &mut fit_id)
+                    );
+                    body.push_str(&layered_box(
+                        &content,
+                        [
+                            glyphs[0].x * scale,
+                            y * scale,
+                            width * scale,
+                            size * 1.5 * scale,
+                        ],
+                        glyphs[0].order,
+                    ));
+                    start = end;
+                    continue;
+                }
                 body.push_str(&format!("<w:p><w:pPr><w:framePr w:w=\"{}\" w:hAnchor=\"page\" w:vAnchor=\"page\" w:x=\"{}\" w:y=\"{}\" w:wrap=\"none\" w:hSpace=\"0\" w:vSpace=\"0\"/><w:widowControl w:val=\"0\"/><w:spacing w:before=\"0\" w:after=\"0\" w:line=\"{}\" w:lineRule=\"exact\"/></w:pPr>{}</w:p>",twip(width*scale),twip(glyphs[0].x*scale),twip(y*scale),twip(size*1.1*scale),runs(glyphs,scale,&mut fit_id)));
                 start = end;
             }
@@ -836,6 +1017,15 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
             page_index + 1 == layouts.len(),
         ));
     }
+    package_docx(&body, &media, None, None)
+}
+
+fn package_docx(
+    body: &str,
+    media: &[Vec<u8>],
+    styles: Option<&str>,
+    numbering: Option<&str>,
+) -> Result<Vec<u8>> {
     ensure!(
         media.iter().map(Vec::len).sum::<usize>() + body.len() <= 256 * 1024 * 1024,
         "EXPORT_SIZE_LIMIT"
@@ -849,15 +1039,21 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
     for i in 1..=media.len() {
         rels.push_str(&format!("<Relationship Id=\"rId{i}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/image\" Target=\"media/image{i}.png\"/>"));
     }
+    for (name, part) in [("styles", styles), ("numbering", numbering)] {
+        if part.is_some() {
+            rels.push_str(&format!("<Relationship Id=\"rId{name}\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/{name}\" Target=\"{name}.xml\"/>"));
+        }
+    }
     rels.push_str("</Relationships>");
+    let extras = [("styles", styles), ("numbering", numbering)].into_iter().filter(|(_, p)|p.is_some()).map(|(name,_)|format!("<Override PartName=\"/word/{name}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.{name}+xml\"/>")).collect::<String>();
+    let content_types = format!(
+        "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/>{extras}</Types>"
+    );
     let mut output = zip::ZipWriter::new(Cursor::new(Vec::new()));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
     for (name, value) in [
-        (
-            "[Content_Types].xml",
-            "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Default Extension=\"png\" ContentType=\"image/png\"/><Override PartName=\"/word/document.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml\"/></Types>",
-        ),
+        ("[Content_Types].xml", content_types.as_str()),
         (
             "_rels/.rels",
             "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"word/document.xml\"/></Relationships>",
@@ -867,6 +1063,12 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
     ] {
         output.start_file(name, options)?;
         output.write_all(value.as_bytes())?;
+    }
+    for (name, part) in [("styles", styles), ("numbering", numbering)] {
+        if let Some(part) = part {
+            output.start_file(format!("word/{name}.xml"), options)?;
+            output.write_all(part.as_bytes())?;
+        }
     }
     for (i, png) in media.iter().enumerate() {
         output.start_file(format!("word/media/image{}.png", i + 1), options)?;
@@ -878,3 +1080,7 @@ pub fn export(bytes: &[u8], selected: &[u16]) -> Result<Vec<u8>> {
 #[cfg(test)]
 #[path = "editable_docx_tests.rs"]
 mod tests;
+
+#[path = "structured_export.rs"]
+mod structured;
+pub use structured::{MarkdownExport, flow_docx, markdown};

@@ -67,3 +67,10 @@
 !/.github/workflows/windows.yml
 
 !/apps/flutter_app/analysis_options.yaml
+
+# User-provided brand artwork is part of the application source.
+!/apps/flutter_app/assets/
+/apps/flutter_app/assets/*
+!/apps/flutter_app/assets/branding/
+!/apps/flutter_app/assets/branding/folinq.png
+!/apps/flutter_app/windows/runner/resources/app_icon.ico

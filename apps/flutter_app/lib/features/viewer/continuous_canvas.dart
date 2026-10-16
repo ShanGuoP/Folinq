@@ -1,10 +1,24 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/rust/api.dart' as rust;
 import '../../shared/editor_theme.dart';
 import '../documents/document_controller.dart';
 import 'editable_page.dart';
+
+// Leave Ctrl+wheel to the canvas zoom handler instead of nested scroll views.
+class _CanvasScrollPhysics extends ClampingScrollPhysics {
+  const _CanvasScrollPhysics({super.parent});
+  @override
+  _CanvasScrollPhysics applyTo(ScrollPhysics? ancestor) =>
+      _CanvasScrollPhysics(parent: buildParent(ancestor));
+  @override
+  bool shouldAcceptUserOffset(ScrollMetrics position) =>
+      !HardwareKeyboard.instance.isControlPressed &&
+      super.shouldAcceptUserOffset(position);
+}
 
 class ContinuousCanvas extends ConsumerStatefulWidget {
   const ContinuousCanvas({super.key, required this.state});
@@ -21,6 +35,23 @@ class _ContinuousCanvasState extends ConsumerState<ContinuousCanvas> {
   double zoom = 1;
   int visible = 0;
   bool jumpPending = false;
+
+  void handleWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent ||
+        !HardwareKeyboard.instance.isControlPressed ||
+        event.scrollDelta.dy == 0) {
+      return;
+    }
+    GestureBinding.instance.pointerSignalResolver.register(event, (signal) {
+      final next = (zoom * (event.scrollDelta.dy < 0 ? 1.2 : 1 / 1.2)).clamp(
+        .5,
+        4.0,
+      );
+      if (next != zoom) setState(() => zoom = next);
+      event.respond(allowPlatformDefault: false);
+    });
+  }
+
   @override
   void initState() {
     super.initState();
@@ -143,127 +174,133 @@ class _ContinuousCanvasState extends ConsumerState<ContinuousCanvas> {
         constraints.maxWidth,
         widths.reduce(math.max) + 56,
       );
-      return Stack(
-        children: [
-          Positioned.fill(
-            child: Scrollbar(
-              controller: horizontal,
-              child: SingleChildScrollView(
+      return Listener(
+        onPointerSignal: handleWheel,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: Scrollbar(
                 controller: horizontal,
-                scrollDirection: Axis.horizontal,
-                child: SizedBox(
-                  width: contentWidth,
-                  height: constraints.maxHeight,
-                  child: Scrollbar(
-                    controller: scroll,
-                    thumbVisibility: true,
-                    child: ListView.builder(
-                      key: const ValueKey('continuous-pages'),
+                child: SingleChildScrollView(
+                  controller: horizontal,
+                  physics: const _CanvasScrollPhysics(),
+                  scrollDirection: Axis.horizontal,
+                  child: SizedBox(
+                    width: contentWidth,
+                    height: constraints.maxHeight,
+                    child: Scrollbar(
                       controller: scroll,
-                      padding: const EdgeInsets.only(top: 16, bottom: 72),
-                      itemCount: document.pages.length,
-                      itemBuilder: (context, index) {
-                        final page = document.pages[index];
-                        return SizedBox(
-                          height: widths[index] * page.height / page.width + 48,
-                          child: Column(
-                            children: [
-                              SizedBox(
-                                width: widths[index],
-                                height:
-                                    widths[index] * page.height / page.width,
-                                child: ColoredBox(
-                                  color: Colors.white,
-                                  child: FutureBuilder<String>(
-                                    future: preview(index),
-                                    builder: (context, snapshot) =>
-                                        snapshot.hasData
-                                        ? EditablePage(
-                                            key: ValueKey(
-                                              '${document.id}:${page.id}',
+                      thumbVisibility: true,
+                      child: ListView.builder(
+                        key: const ValueKey('continuous-pages'),
+                        controller: scroll,
+                        physics: const _CanvasScrollPhysics(),
+                        padding: const EdgeInsets.only(top: 16, bottom: 72),
+                        itemCount: document.pages.length,
+                        itemBuilder: (context, index) {
+                          final page = document.pages[index];
+                          return SizedBox(
+                            height:
+                                widths[index] * page.height / page.width + 48,
+                            child: Column(
+                              children: [
+                                SizedBox(
+                                  width: widths[index],
+                                  height:
+                                      widths[index] * page.height / page.width,
+                                  child: ColoredBox(
+                                    color: Colors.white,
+                                    child: FutureBuilder<String>(
+                                      future: preview(index),
+                                      builder: (context, snapshot) =>
+                                          snapshot.hasData
+                                          ? EditablePage(
+                                              key: ValueKey(
+                                                '${document.id}:${page.id}',
+                                              ),
+                                              page: page,
+                                              pageIndex: index,
+                                              preview: snapshot.data!,
+                                            )
+                                          : Center(
+                                              child: Text(
+                                                snapshot.hasError
+                                                    ? '页面加载失败，点击页码重试'
+                                                    : '正在载入第 ${index + 1} 页…',
+                                              ),
                                             ),
-                                            page: page,
-                                            pageIndex: index,
-                                            preview: snapshot.data!,
-                                          )
-                                        : Center(
-                                            child: Text(
-                                              snapshot.hasError
-                                                  ? '页面加载失败，点击页码重试'
-                                                  : '正在载入第 ${index + 1} 页…',
-                                            ),
-                                          ),
+                                    ),
                                   ),
                                 ),
-                              ),
-                              Padding(
-                                padding: const EdgeInsets.only(top: 8),
-                                child: Text(
-                                  '第 ${index + 1} 页',
-                                  style: const TextStyle(
-                                    fontSize: 11,
-                                    color: EditorColors.muted,
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 8),
+                                  child: Text(
+                                    '第 ${index + 1} 页',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      color: EditorColors.muted,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            ],
-                          ),
-                        );
-                      },
+                              ],
+                            ),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          ),
-          Positioned(
-            bottom: 18,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Material(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(32),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 4,
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ToolButton(
-                        icon: Icons.remove,
-                        label: '缩小',
-                        onPressed: () =>
-                            setState(() => zoom = (zoom / 1.2).clamp(.5, 4)),
-                      ),
-                      SizedBox(
-                        width: 48,
-                        child: Text(
-                          '${(zoom * 100).round()}%',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(fontSize: 11),
+            Positioned(
+              bottom: 18,
+              left: 0,
+              right: 0,
+              child: Center(
+                child: Material(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(32),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ToolButton(
+                          icon: Icons.remove,
+                          label: '缩小',
+                          onPressed: () =>
+                              setState(() => zoom = (zoom / 1.2).clamp(.5, 4)),
                         ),
-                      ),
-                      ToolButton(
-                        icon: Icons.add,
-                        label: '放大',
-                        onPressed: () =>
-                            setState(() => zoom = (zoom * 1.2).clamp(.5, 4)),
-                      ),
-                      ToolButton(
-                        icon: Icons.fit_screen,
-                        label: '适应窗口',
-                        onPressed: () => setState(() => zoom = 1),
-                      ),
-                    ],
+                        SizedBox(
+                          width: 48,
+                          child: Text(
+                            '${(zoom * 100).round()}%',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(fontSize: 11),
+                          ),
+                        ),
+                        ToolButton(
+                          icon: Icons.add,
+                          label: '放大',
+                          onPressed: () =>
+                              setState(() => zoom = (zoom * 1.2).clamp(.5, 4)),
+                        ),
+                        ToolButton(
+                          icon: Icons.fit_screen,
+                          label: '适应窗口',
+                          onPressed: () => setState(() => zoom = 1),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
             ),
-          ),
-        ],
+          ],
+        ),
       );
     },
   );

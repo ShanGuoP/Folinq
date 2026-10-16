@@ -68,6 +68,8 @@ def main():
         '请完整解压后，双击根目录的 Folinq.exe 启动。\n'
         'runtime 文件夹包含全部运行库和资源，请保留在启动程序旁边。\n'
         '升级时完整解压到新文件夹即可，原有本地项目和恢复记录继续保留。\n\n'
+        '点击工作台左上角的图标或 Folinq 页翎，可查看版本、访问或复制项目开源地址。\n'
+        '开源地址：https://github.com/ShanGuoP/Folinq\n\n'
         '支持拖入 PDF 打开、删除最近记录（保留源文件）、可编辑 Word 导出、输出目录记忆。\n'
         '复杂 PDF 的 Word 排版仍需校对；纯扫描页需先 OCR。\n', encoding='utf-8-sig')
     info = {'name': 'Folinq 页翎', 'created_at': now.isoformat(),

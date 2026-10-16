@@ -19,6 +19,24 @@ pub struct Session {
     undo: Vec<PathBuf>,
     redo: Vec<PathBuf>,
     saved_hash: String,
+    // Held for the entire writable session, including snapshot collection.
+    ownership: Option<fs::File>,
+}
+
+fn acquire_ownership(directory: &Path) -> Result<fs::File> {
+    // Keep a stable lock file: deleting it on close could let two processes lock
+    // different files with the same name. The OS releases the lock on crash.
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join("session.lock"))?;
+    file.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => anyhow::anyhow!("DOCUMENT_ALREADY_OPEN"),
+        fs::TryLockError::Error(error) => anyhow::Error::new(error).context("SESSION_LOCK_FAILED"),
+    })?;
+    Ok(file)
 }
 
 fn hash(bytes: &[u8]) -> String {
@@ -73,6 +91,7 @@ impl Session {
         }
         let directory = workspace.join(&id);
         fs::create_dir_all(&directory)?;
+        let ownership = acquire_ownership(&directory)?;
         publish_new(&directory.join("source.pdf"), &bytes)?;
         let working = directory.join("version-0.pdf");
         publish_new(&working, &bytes)?;
@@ -94,6 +113,7 @@ impl Session {
             undo: vec![],
             redo: vec![],
             saved_hash: source_hash,
+            ownership: Some(ownership),
         };
         session.journal(&session.info)?;
         session.persist_recovery(&session.info, &[], &[], &session.saved_hash)?;
@@ -135,6 +155,7 @@ impl Session {
             directory.parent() == Some(root.as_path()),
             "INVALID_RECOVERY_PATH"
         );
+        let ownership = acquire_ownership(&directory)?;
         let record: serde_json::Value =
             serde_json::from_slice(&fs::read(directory.join("recovery.json"))?)?;
         let mut info: DocumentInfo = serde_json::from_value(record["info"].clone())?;
@@ -173,7 +194,13 @@ impl Session {
             undo,
             redo,
             saved_hash,
+            ownership: Some(ownership),
         })
+    }
+
+    // Called only after the API has invalidated handles and drained operations.
+    pub(crate) fn release_ownership(&mut self) {
+        self.ownership.take();
     }
 
     pub fn recoverable(workspace: &Path) -> Result<Vec<DocumentInfo>> {
@@ -181,7 +208,7 @@ impl Session {
             return Ok(vec![]);
         }
         let mut results = Vec::new();
-        for entry in fs::read_dir(workspace)?.take(1000).flatten() {
+        for entry in fs::read_dir(workspace)?.flatten() {
             let path = entry.path().join("recovery.json");
             let name = entry.file_name().to_string_lossy().into_owned();
             if Uuid::parse_str(&name).is_err() || !entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -841,7 +868,24 @@ impl Session {
         pages: &[u16],
         mode: &str,
     ) -> Result<()> {
-        ensure!(matches!(mode, "layout" | "text"), "INVALID_EXPORT_MODE");
+        self.export_with_options(version, format, destination, pages, mode, false)
+    }
+
+    pub fn export_with_options(
+        &self,
+        version: u64,
+        format: &str,
+        destination: &Path,
+        pages: &[u16],
+        mode: &str,
+        remove_margins: bool,
+    ) -> Result<()> {
+        ensure!(
+            matches!(mode, "layout" | "text")
+                || (format == "docx" && mode == "flow")
+                || (format == "md" && mode == "structured"),
+            "INVALID_EXPORT_MODE"
+        );
         ensure!(!destination.exists(), "DESTINATION_EXISTS_OR_UNWRITABLE");
         check_version(self.info.version, version)?;
         let selected: Vec<PageInfo> = if pages.is_empty() {
@@ -867,11 +911,17 @@ impl Session {
                 )?,
             );
         }
-        if format == "md" && mode == "layout" {
-            let images = pdf_engine::conversion::layout_pages(
-                &self.bytes()?,
-                &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
-            )?;
+        if format == "docx" && mode == "flow" {
+            return publish_new(
+                destination,
+                &pdf_engine::editable_docx::flow_docx(
+                    &self.bytes()?,
+                    &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
+                    remove_margins,
+                )?,
+            );
+        }
+        if format == "md" && matches!(mode, "layout" | "structured") {
             // Stage all images before publishing the .md. A unique adjacent
             // directory avoids overwriting existing resources or racing exports.
             let parent = destination
@@ -879,20 +929,53 @@ impl Session {
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
             let resources = format!("folinq-assets-{}", Uuid::new_v4());
+            let (markdown, images): (String, Vec<(String, Vec<u8>)>) = if mode == "structured" {
+                let output = pdf_engine::editable_docx::markdown(
+                    &self.bytes()?,
+                    &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
+                    &resources,
+                    remove_margins,
+                )?;
+                (
+                    output.text,
+                    output
+                        .images
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, image)| (format!("image-{:04}.png", i + 1), image))
+                        .collect(),
+                )
+            } else {
+                let images = pdf_engine::conversion::layout_pages(
+                    &self.bytes()?,
+                    &selected.iter().map(|p| p.index).collect::<Vec<_>>(),
+                )?;
+                let mut markdown = String::new();
+                let images = selected
+                    .iter()
+                    .zip(images)
+                    .map(|(page, image)| {
+                        let filename = format!("page-{:04}.png", page.index + 1);
+                        markdown.push_str(&format!(
+                            "## 第 {} 页\n\n![第 {} 页]({resources}/{filename})\n\n",
+                            page.index + 1,
+                            page.index + 1
+                        ));
+                        (filename, image)
+                    })
+                    .collect();
+                (markdown, images)
+            };
+            if images.is_empty() {
+                return publish_new(destination, markdown.as_bytes());
+            }
             let staging = tempfile::Builder::new()
                 .prefix(".folinq-export-")
                 .tempdir_in(parent)?;
-            let mut markdown = String::new();
-            for (page, image) in selected.iter().zip(&images) {
-                let filename = format!("page-{:04}.png", page.index + 1);
-                let mut file = fs::File::create(staging.path().join(&filename))?;
+            for (filename, image) in &images {
+                let mut file = fs::File::create(staging.path().join(filename))?;
                 file.write_all(image)?;
                 file.sync_all()?;
-                markdown.push_str(&format!(
-                    "## 第 {} 页\n\n![第 {} 页]({resources}/{filename})\n\n",
-                    page.index + 1,
-                    page.index + 1
-                ));
             }
             let resource_path = parent.join(&resources);
             fs::rename(staging.path(), &resource_path)?;
@@ -1068,6 +1151,27 @@ mod tests {
                 .is_err()
         );
         assert!(!temp.path().join("missing/output.md").exists());
+        let structured = temp.path().join("structured.md");
+        session.export_with_options(v, "md", &structured, &[1, 0], "structured", true)?;
+        let structured_text = fs::read_to_string(&structured)?;
+        assert!(structured_text.starts_with("<!-- page 2 -->"));
+        assert!(structured_text.contains("Hello PDF Editor"));
+        let links = structured_text.split("](").skip(1).collect::<Vec<_>>();
+        assert_eq!(links.len(), 1);
+        let linked = temp.path().join(links[0].split(')').next().unwrap());
+        let original_picture = image::open(linked)?;
+        assert!(original_picture.width() < 1000 && original_picture.height() < 1000);
+        let entries = fs::read_dir(temp.path())?.count();
+        assert!(
+            session
+                .export_with_options(v, "md", &structured, &[], "structured", false)
+                .is_err()
+        );
+        assert_eq!(fs::read_dir(temp.path())?.count(), entries);
+        assert_eq!(fs::read_to_string(structured)?, structured_text);
+        assert_eq!(session.bytes()?, before);
+        assert_eq!(session.info.version, v);
+        assert_eq!(fs::read(&source)?, original);
         // Another opening of the same PDF remains available through history.
         let older = Session::open(&source, &workspace)?;
         let history = session.history()?;
@@ -1134,7 +1238,9 @@ mod tests {
         let data = command("delete", serde_json::json!({"id":id}))?;
         assert!(data["memberships"].as_object().unwrap().is_empty());
         assert!(data["projects"].as_array().unwrap().is_empty());
-        assert!(Session::recover(&workspace, &session.info.id).is_ok());
+        let session_id = session.info.id.clone();
+        drop(session);
+        assert!(Session::recover(&workspace, &session_id).is_ok());
         assert!(source.exists());
         Ok(())
     }
@@ -1177,7 +1283,9 @@ mod tests {
         let mut session = Session::open(&source, &workspace)?;
         let id = session.info.pages[0].text_objects[0].id.clone();
         session.replace(0, &id, "Hi")?;
-        let mut session = Session::recover(&workspace, &session.info.id)?;
+        let session_id = session.info.id.clone();
+        drop(session);
+        let mut session = Session::recover(&workspace, &session_id)?;
         session.replace(1, &id, "Hello PDF Editor")?;
         assert_eq!(
             session.info.pages[0].text_objects[0].text,
@@ -1227,7 +1335,9 @@ mod tests {
         );
         let output = temp.path().join("searchable.pdf");
         session.save(4, &output)?;
-        let restored = Session::recover(&temp.path().join("sessions"), &session.info.id)?;
+        let session_id = session.info.id.clone();
+        drop(session);
+        let restored = Session::recover(&temp.path().join("sessions"), &session_id)?;
         assert!(!restored.info.dirty);
         assert!(restored.info.pages[0].text_content.contains("Hello"));
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -1257,7 +1367,9 @@ mod tests {
         assert_eq!(session.info.pages.len(), 1);
         session.undo(3)?;
         assert_eq!(session.info.pages[1].id, inserted);
-        let mut restored = Session::recover(&workspace, &session.info.id)?;
+        let session_id = session.info.id.clone();
+        drop(session);
+        let mut restored = Session::recover(&workspace, &session_id)?;
         assert_eq!(restored.info.version, 4);
         assert_eq!(restored.info.pages[0].id, original_page);
         restored.redo(4)?;
