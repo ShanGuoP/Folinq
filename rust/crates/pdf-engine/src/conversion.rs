@@ -242,6 +242,62 @@ pub fn docx_export(pages: &[PageInfo]) -> Result<Vec<u8>> {
     Ok(cursor.into_inner())
 }
 
+/// Editable text export for OCR Markdown. HTML table cells remain readable text;
+/// this deliberately does not promise original layout, embedded pictures or native tables.
+pub fn ocr_text_exports(markdown: &str) -> Result<(String, Vec<u8>)> {
+    use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
+    let mut text = String::new();
+    for event in Parser::new_ext(markdown, Options::ENABLE_TABLES) {
+        match event {
+            Event::Text(value) | Event::Code(value) => text.push_str(&value),
+            Event::SoftBreak | Event::HardBreak => text.push('\n'),
+            Event::Start(Tag::Item) => text.push_str("• "),
+            Event::End(TagEnd::TableCell) => text.push('\t'),
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Heading(_)
+                | TagEnd::Item
+                | TagEnd::CodeBlock
+                | TagEnd::TableRow
+                | TagEnd::TableHead,
+            ) => text.push('\n'),
+            Event::Html(value) | Event::InlineHtml(value) => {
+                let mut plain = String::new();
+                let mut tag = String::new();
+                let mut inside = false;
+                for c in value.chars() {
+                    match c {
+                        '<' => {
+                            inside = true;
+                            tag.clear();
+                        }
+                        '>' if inside => {
+                            inside = false;
+                            match tag.to_lowercase().as_str() {
+                                "/td" | "/th" => plain.push('\t'),
+                                "/tr" | "/p" | "br" | "br/" | "br /" => plain.push('\n'),
+                                _ => {}
+                            }
+                        }
+                        _ if inside => tag.push(c),
+                        _ => plain.push(c),
+                    }
+                }
+                text.push_str(&quick_xml::escape::unescape(&plain).unwrap_or(plain.clone().into()));
+            }
+            _ => {}
+        }
+    }
+    ensure!(!text.trim().is_empty(), "OCR_EMPTY_TEXT");
+    let mut document = Docx::new();
+    for line in text.lines() {
+        document = document.add_paragraph(Paragraph::new().add_run(Run::new().add_text(line)));
+    }
+    let mut output = std::io::Cursor::new(Vec::new());
+    document.build().pack(&mut output)?;
+    Ok((text, output.into_inner()))
+}
+
 /// Render in page order with annotations. PNG bytes are also used verbatim in
 /// Markdown resources so the two fidelity exports share the same page appearance.
 pub fn layout_pages(bytes: &[u8], pages: &[u16]) -> Result<Vec<Vec<u8>>> {

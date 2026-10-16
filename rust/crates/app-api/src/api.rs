@@ -241,6 +241,18 @@ pub fn document_command(
         "save_as" => session.save(expected_version, Path::new(&value))?,
         "save_source" => session.save_source(expected_version)?,
         "external_save_complete" => session.mark_external_saved(expected_version)?,
+        "prepare_ocr_export" => {
+            return session.prepare_ocr_export(expected_version, &value);
+        }
+        "publish_external_export" => {
+            let request: serde_json::Value = serde_json::from_str(&value)?;
+            session.publish_external_export(
+                expected_version,
+                Path::new(request["prepared"].as_str().context("INVALID_EXPORT")?),
+                Path::new(request["destination"].as_str().context("INVALID_EXPORT")?),
+            )?;
+        }
+        "discard_external_export" => session.discard_external_export(Path::new(&value))?,
         _ => anyhow::bail!("UNKNOWN_COMMAND"),
     }
     Ok(serde_json::to_string(&session.info)?)

@@ -629,8 +629,16 @@ class _MobileProperties extends ConsumerWidget {
 }
 
 class PageCanvas extends ConsumerStatefulWidget {
-  const PageCanvas({super.key, required this.state});
+  const PageCanvas({
+    super.key,
+    required this.state,
+    this.allowSelection = true,
+    this.allowObjectDrag = true,
+    this.maxDetailWidth = 4096,
+  });
   final DocumentState state;
+  final bool allowSelection, allowObjectDrag;
+  final int maxDetailWidth;
   @override
   ConsumerState<PageCanvas> createState() => _PageCanvasState();
 }
@@ -653,7 +661,7 @@ class _PageCanvasState extends ConsumerState<PageCanvas>
                 512)
             .ceil() *
         512;
-    final width = desired.clamp(1200, 4096);
+    final width = desired.clamp(1200, widget.maxDetailWidth);
     if (width <= detailWidth) return;
     final generation = ++detailGeneration;
     final identity = detailIdentity;
@@ -810,6 +818,8 @@ class _PageCanvasState extends ConsumerState<PageCanvas>
                           ],
                         ),
                         child: EditablePage(
+                          allowSelection: widget.allowSelection,
+                          allowObjectDrag: widget.allowObjectDrag,
                           page: page,
                           pageIndex: state.page,
                           preview: detailPreview ?? state.preview!,

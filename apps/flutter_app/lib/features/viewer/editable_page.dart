@@ -13,10 +13,13 @@ class EditablePage extends ConsumerStatefulWidget {
     required this.page,
     required this.pageIndex,
     required this.preview,
+    this.allowSelection = true,
+    this.allowObjectDrag = true,
   });
   final PageInfo page;
   final int pageIndex;
   final String preview;
+  final bool allowSelection, allowObjectDrag;
   @override
   ConsumerState<EditablePage> createState() => _EditablePageState();
 }
@@ -25,7 +28,7 @@ class _EditablePageState extends ConsumerState<EditablePage> {
   String? dragging;
   Rect? live;
   void select(TextObject object) {
-    Focus.of(context).requestFocus();
+    Focus.maybeOf(context)?.requestFocus();
     ref
         .read(documentProvider.notifier)
         .selectOnPage(widget.pageIndex, object, widget.preview);
@@ -70,7 +73,10 @@ class _EditablePageState extends ConsumerState<EditablePage> {
                     const Center(child: Text('页面预览加载失败')),
               ),
             ),
-            for (final object in widget.page.objects) ...[
+            for (final object
+                in widget.allowSelection
+                    ? widget.page.objects
+                    : <TextObject>[]) ...[
               Builder(
                 builder: (context) {
                   final original = Rect.fromLTRB(
@@ -86,6 +92,7 @@ class _EditablePageState extends ConsumerState<EditablePage> {
                       state.page == widget.pageIndex &&
                       state.selected?.id == object.id;
                   final enabled =
+                      widget.allowObjectDrag &&
                       !state.busy &&
                       (object.kind == 'image' || object.editable);
                   void begin() {

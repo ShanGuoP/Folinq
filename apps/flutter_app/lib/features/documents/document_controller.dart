@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/app_directories.dart';
 import '../../core/document.dart';
 import '../../core/rust/api.dart' as rust;
 import '../../core/platform_documents.dart';
 import '../../core/font_assets.dart';
+import '../../core/online_ocr.dart';
 
 final openDocumentsProvider =
     NotifierProvider<OpenDocuments, List<DocumentInfo>>(OpenDocuments.new);
@@ -365,6 +367,122 @@ class DocumentController extends Notifier<DocumentState> {
     }
   }
 
+  String? lastExternalExportUri;
+  OnlineOcrClient? _onlineOcr;
+  bool _onlineCancelled = false;
+  void cancelOnlineExport() {
+    _onlineCancelled = true;
+    _onlineOcr?.cancel();
+  }
+
+  Future<String?> exportOnline(
+    String format,
+    List<int> pages,
+    OnlineOcrConfig config, {
+    String? destination,
+    void Function(String)? onProgress,
+  }) async {
+    final previous = state.withError(null);
+    final document = previous.document;
+    if (previous.busy || document == null) return null;
+    config.validate();
+    if (!['md', 'txt', 'docx'].contains(format) ||
+        pages.isEmpty ||
+        pages.length > 100) {
+      throw const FormatException('在线 OCR 支持 Word、Markdown、TXT，每次最多 100 页。');
+    }
+    _onlineCancelled = false;
+    final client = _onlineOcr = OnlineOcrClient();
+    final prepared = <String>[];
+    var completedState = previous;
+    lastExternalExportUri = null;
+    state = previous.withBusy(true);
+    void check() {
+      if (_onlineCancelled) throw OnlineOcrCancelled();
+      if (state.document?.id != document.id ||
+          state.document?.version != document.version) {
+        throw const FormatException('文档已发生变化，请重新导出。');
+      }
+    }
+
+    Future<String> command(String name, String value) => rust.documentCommand(
+      documentId: document.id,
+      expectedVersion: BigInt.from(document.version),
+      command: name,
+      objectId: '',
+      value: value,
+    );
+    try {
+      onProgress?.call('正在准备所选的 ${pages.length} 页…');
+      final input = await rust.prepareExternalExport(
+        documentId: document.id,
+        expectedVersion: BigInt.from(document.version),
+        format: 'pdf',
+        pages: pages,
+      );
+      prepared.add(input);
+      check();
+      onProgress?.call('正在上传并识别 ${pages.length} 页，可能需要数分钟…');
+      final results = await client.recognize(
+        File(input),
+        pages.length,
+        config,
+        includeImages: format == 'md',
+      );
+      check();
+      onProgress?.call('识别完成，正在生成导出文件…');
+      final output = await command(
+        'prepare_ocr_export',
+        jsonEncode({'format': format, 'pages': results}),
+      );
+      prepared.add(output);
+      check();
+      String? saved;
+      if (destination != null) {
+        await command(
+          'publish_external_export',
+          jsonEncode({'prepared': output, 'destination': destination}),
+        );
+        saved = destination;
+      } else {
+        final extension = format == 'md' ? 'zip' : format;
+        final stem = document.name.replaceFirst(
+          RegExp(r'\.pdf$', caseSensitive: false),
+          '',
+        );
+        saved = await PlatformDocuments.save(
+          output,
+          '$stem-ocr.$extension',
+          format == 'md'
+              ? 'application/zip'
+              : format == 'txt'
+              ? 'text/plain'
+              : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        );
+        lastExternalExportUri = saved;
+      }
+      return saved;
+    } catch (error) {
+      completedState = previous.withError(readableError('$error'));
+      rethrow;
+    } finally {
+      client.cancel();
+      _onlineOcr = null;
+      for (final path in prepared) {
+        try {
+          await command('discard_external_export', path);
+        } catch (_) {
+          /* Recovery removes abandoned private exports. */
+        }
+      }
+      if (ref.mounted &&
+          state.document?.id == document.id &&
+          state.document?.version == document.version) {
+        state = completedState;
+      }
+    }
+  }
+
   Future<bool> exportAndroid(
     String format,
     List<int> pages, {
@@ -373,6 +491,8 @@ class DocumentController extends Notifier<DocumentState> {
     final previous = state;
     final document = previous.document;
     if (previous.busy || document == null) return false;
+    lastExternalExportUri = null;
+    String? prepared;
     state = DocumentState(
       document: document,
       page: previous.page,
@@ -387,6 +507,8 @@ class DocumentController extends Notifier<DocumentState> {
         format: format,
         pages: pages,
       );
+      prepared = path;
+      final actualFormat = path.split('.').last.toLowerCase();
       const mimes = {
         'pdf': 'application/pdf',
         'txt': 'text/plain',
@@ -395,11 +517,16 @@ class DocumentController extends Notifier<DocumentState> {
         'jpg': 'image/jpeg',
         'docx':
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'zip': 'application/zip',
       };
+      final stem = document.name.replaceFirst(
+        RegExp(r'\.pdf$', caseSensitive: false),
+        '',
+      );
       final uri = await PlatformDocuments.save(
         path,
-        'edited.$format',
-        mimes[format] ?? 'application/octet-stream',
+        '$stem-edited.$actualFormat',
+        mimes[actualFormat] ?? 'application/octet-stream',
       );
       if (uri == null) {
         state = previous;
@@ -428,6 +555,7 @@ class DocumentController extends Notifier<DocumentState> {
       } else {
         state = previous;
       }
+      lastExternalExportUri = uri;
       return true;
     } catch (error) {
       state = DocumentState(
@@ -438,6 +566,20 @@ class DocumentController extends Notifier<DocumentState> {
         error: readableError('$error'),
       );
       return false;
+    } finally {
+      if (prepared != null) {
+        try {
+          await rust.documentCommand(
+            documentId: document.id,
+            expectedVersion: BigInt.from(document.version),
+            command: 'discard_external_export',
+            objectId: '',
+            value: prepared,
+          );
+        } catch (_) {
+          // Export outcome is already known; do not turn cleanup into success/failure feedback.
+        }
+      }
     }
   }
 

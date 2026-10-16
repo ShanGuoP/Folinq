@@ -2,6 +2,10 @@ import 'package:flutter/services.dart';
 
 abstract final class PlatformDocuments {
   static const channel = MethodChannel('dev.localpdf/documents');
+  static Future<String?> openPdf() =>
+      channel.invokeMethod<String>('openDocument');
+  static Future<void> share(String uri, String mime) =>
+      channel.invokeMethod<void>('shareDocument', {'uri': uri, 'mime': mime});
   static Future<String?> save(String source, String filename, String mime) =>
       channel.invokeMethod<String>('saveDocument', {
         'source': source,

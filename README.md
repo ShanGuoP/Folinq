@@ -1,6 +1,6 @@
 # Folinq 页翎
 
-一个在本地运行的 PDF 编辑器。目前先把 Windows 版做好。
+一个在本地运行的 PDF 编辑器。Windows 提供便携版，Android 已开始实现，目前是开发预览阶段。
 
 改几行字、补一张图片、调整几页顺序——这些小事，最好打开文件就能做。页翎想把这条路径做得顺手一点：文档放在自己电脑上，修改后按一下 `Ctrl+S`，继续做手头的事。
 
@@ -18,7 +18,7 @@
 - **转换与导出**：导出 PDF、PNG、JPG、TXT、Markdown 和 DOCX；也能把图片、TXT、基础 Markdown 和 DOCX 转成 PDF。
 - **导出脱敏副本**：框选需要遮住的区域，生成重新栅格化的 PDF 副本。
 
-PDF 处理和 OCR 在本机完成，不需要上传文档。OCR 使用系统已安装的识别语言。
+默认的 PDF 处理和 Windows OCR 在本机完成，OCR 使用系统已安装的识别语言。导出时也可以主动开启在线 PaddleOCR，只有开启后才会上传所选页面。
 
 ## 使用便携版
 
@@ -85,7 +85,44 @@ PDF 的情况比看上去复杂：扫描件、嵌套对象、特殊字体和多�
 
 交互表单、数字证书签名、完整结构化转换和大文件性能还需要继续完善。图形手签只是页面图形。脱敏副本会将整份文档转为图片页面，不保留原来的可选文字、表单或附件。
 
-当前公开仓库专注 Windows；Android 暂不推进。
+Android 的首批功能与验证范围见下节；它还没有覆盖 Windows 工作台的全部能力。
+
+## 导出时使用在线 PaddleOCR
+
+电脑和安卓版的 Word、Markdown、TXT 导出窗口提供「在线 OCR · PaddleOCR」开关，默认关闭。对于没有文字层的扫描 PDF，可以直接识别后导出，无需先给原 PDF 添加文字层。
+
+1. 填写**同步文档解析接口的完整地址**，例如 `https://你的服务/layout-parsing`。支持 PP-StructureV3 / PaddleOCR-VL 的 `file`、`fileType` 请求和 `result.layoutParsingResults[].markdown` 返回格式。仅 VLM 推理接口、百度 API Key/Secret Key 接口和异步任务接口不能直接填入。
+2. 填写服务的 Token，并按服务说明选择 `token` 或 `Bearer` 鉴权；自部署且没有鉴权时可留空。服务地址和密钥仅留在本次运行内，关闭软件后需重新填写。
+3. 选择页面范围后导出。开启开关并点击导出表示同意向所填服务上传这些页面，可能消耗服务额度。每次最多 100 页、25 MB；超出时请分批选择。
+
+部分自部署服务默认只处理前 10 页，建议先用 1–10 页试用；超过服务限制时会报缺页并停止保存。需要更多页时，服务端可按官方文档配置 `Serving.extra.max_num_input_imgs`。
+
+Markdown 保存为包含 `document.md` 与配图的 ZIP，各页配图分开放置，避免同名冲突。支持服务返回内联 Base64 图片或 HTTPS 图片地址；下载图片不会携带接口 Token。Word 和 TXT 提供识别出的文字，HTML / Markdown 表格会转成可读文字，不保留原生表格、配图和原始版式。识别结果需人工校对。
+
+取消、鉴权失败、超时或返回缺页时不会显示导出成功；不会自动重试付费请求。在线结果只生成副本，保留 PDF 原件、编辑历史与未保存状态。公网服务请使用 HTTPS；使用可信内网的 HTTP 需要手动勾选允许明文传输。Android 手机连接自部署服务时，请填写手机可访问的服务地址，`localhost` 指的是手机自身。
+
+服务部署与协议参考 [PaddleOCR PP-StructureV3 官方文档](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PP-StructureV3.md)。没有内置公共识别地址或共享密钥，需要自行部署或取得相同协议的服务地址与访问权限。
+
+## Android 开发预览
+
+首批面向 **Android 7.0 及以上、ARM64** 手机，使用独立的移动界面：本机文档列表、底部阅读/编辑/页面/导出入口，以及文字属性弹层。
+
+- 从系统文档选择器导入 PDF，复制到应用私有目录后再编辑，不依赖临时缓存，也不直接修改外部原件。
+- 双指缩放、平移、上一页/下一页和页码跳转；阅读模式不会拖动页面里的文字对象。
+- 在编辑模式点击文字或图片，再打开属性面板。支持原生文字替换、内置中文字体、缩小字号、高亮及现有对象操作。
+- 页面列表支持跳页、旋转当前页和插入空白页，修改可撤销、重做。
+- PDF 另存及 PDF、自动排版 Word、TXT、单页 PNG/JPG 导出通过系统文档接口完成；结构化 Markdown 与配图一起导出为 ZIP。写入后校验内容，取消或失败不会显示成功，也不会清除未保存状态。
+- 导出的文件可以调用系统分享菜单；前后台切换和返回文档列表时会尝试保存工作状态与草稿。
+
+当前 APK 使用开发签名。已完成 ARM64 构建、签名与 16 KB 原生库/包内对齐检查，并通过移动布局、双指手势及共享引擎的编辑/导出回归测试。**尚未连接安卓真机验收**，系统文件提供者、输入法、分享与进程重启仍需设备测试。导出已接入在线 PaddleOCR；Android 离线 OCR、字符级长按选字、多页连续触控阅读及完整项目管理界面留待后续实现；本轮没有发布到应用商店。在线协议使用本地模拟服务验证，尚未使用真实付费服务及个人 Token 联调。
+
+在 Windows 开发机安装 Android SDK、NDK **28.2.13676358** 和 JDK 21 后，可运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools/build-android.ps1
+```
+
+脚本优先使用 `.tools/android-sdk`、`.tools/java` 和 `.tools/flutter`，也支持通过 `ANDROID_HOME`、`JAVA_HOME` 指定本机环境；会准备字体及固定版本的 PDFium、交叉编译 Rust、构建 APK 并校验包内 ARM64 库。APK 位于 `apps/flutter_app/build/app/outputs/flutter-apk/app-release.apk`。桥接接口有改动时，增加 `-GenerateBridge` 重新生成绑定。
 
 ## 本地开发
 

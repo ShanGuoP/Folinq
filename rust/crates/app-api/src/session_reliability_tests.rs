@@ -19,10 +19,119 @@ fn rotate(session: &mut Session) -> Result<()> {
     )
 }
 
+#[test]
+fn online_exports_validate_version_publish_without_overwrite_and_preserve_session() -> Result<()> {
+    let (temp, _, mut session) = fixture()?;
+    rotate(&mut session)?;
+    let bytes = session.bytes()?;
+    let request = serde_json::json!({"format":"docx","pages":[{"markdown":"# OCR title\n\n识别正文\n\n<table><tr><td>项目</td><td>金额</td></tr><tr><td>甲</td><td>123</td></tr></table>"}]}).to_string();
+    assert!(session.prepare_ocr_export(0, &request).is_err());
+    let prepared = PathBuf::from(session.prepare_ocr_export(1, &request)?);
+    let text = pdf_engine::conversion::docx_blocks(&fs::read(&prepared)?)?;
+    let text = text
+        .iter()
+        .map(|b| b.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains("识别正文") && text.contains("项目") && text.contains("123"));
+    let destination = temp.path().join("ocr.docx");
+    assert!(
+        session
+            .publish_external_export(0, &prepared, &destination)
+            .is_err()
+    );
+    session.publish_external_export(1, &prepared, &destination)?;
+    assert_eq!(fs::read(&prepared)?, fs::read(&destination)?);
+    assert!(
+        session
+            .publish_external_export(1, &prepared, &destination)
+            .is_err()
+    );
+    assert!(
+        session
+            .publish_external_export(1, &destination, &temp.path().join("escape.docx"))
+            .is_err()
+    );
+    session.discard_external_export(&prepared)?;
+    assert!(!prepared.exists());
+    assert!(destination.exists());
+    assert_eq!(session.bytes()?, bytes);
+    assert_eq!(session.info.version, 1);
+    assert!(session.info.dirty);
+    Ok(())
+}
+
 fn reopen(session: Session, workspace: &Path) -> Result<Session> {
     let id = session.info.id.clone();
     drop(session);
     Session::recover(workspace, &id)
+}
+
+#[test]
+fn external_exports_bundle_markdown_assets_and_cleanup_only_prepared_files() -> Result<()> {
+    let (temp, workspace, mut session) = fixture()?;
+    let picture = temp.path().join("picture.png");
+    image::RgbImage::from_pixel(12, 8, image::Rgb([220, 140, 50])).save(&picture)?;
+    session.object_operation(
+        0,
+        ObjectOperation::InsertImage {
+            page: 0,
+            path: picture.to_string_lossy().into(),
+            x: 100.,
+            y: 400.,
+            width: 120.,
+            height: 80.,
+        },
+    )?;
+    let original = session.bytes()?;
+    let bundle = session.prepare_external_export(1, "md", &[])?;
+    assert!(bundle.ends_with(".zip"));
+    let mut zip = zip::ZipArchive::new(fs::File::open(&bundle)?)?;
+    let names = zip.file_names().map(str::to_owned).collect::<Vec<_>>();
+    let mut markdown = String::new();
+    zip.by_name("document.md")?.read_to_string(&mut markdown)?;
+    assert!(markdown.contains("Hello PDF Editor"));
+    let link = markdown
+        .split("](")
+        .nth(1)
+        .unwrap()
+        .split(')')
+        .next()
+        .unwrap();
+    assert!(names.iter().any(|name| name == link));
+    let mut embedded = Vec::new();
+    zip.by_name(link)?.read_to_end(&mut embedded)?;
+    assert_eq!(image::load_from_memory(&embedded)?.width(), 12);
+    drop(zip);
+    assert!(
+        session
+            .discard_external_export(Path::new(&session.info.working_path))
+            .is_err()
+    );
+    session.discard_external_export(Path::new(&bundle))?;
+    assert!(!Path::new(&bundle).parent().unwrap().exists());
+    assert_eq!(session.bytes()?, original);
+    assert!(session.info.dirty);
+    let path = session.prepare_external_export(1, "pdf", &[])?;
+    assert_eq!(fs::read(&path)?, original);
+    session.discard_external_export(Path::new(&path))?;
+    assert!(session.prepare_external_export(1, "md", &[99]).is_err());
+    assert!(
+        session
+            .prepare_external_export(1, "../../pdf", &[])
+            .is_err()
+    );
+    assert!(!fs::read_dir(&session.directory)?.flatten().any(|entry| {
+        entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("external-export-")
+    }));
+    let interrupted = session.prepare_external_export(1, "pdf", &[])?;
+    let recovered = reopen(session, &workspace)?;
+    assert!(!Path::new(&interrupted).parent().unwrap().exists());
+    assert_eq!(recovered.bytes()?, original);
+    Ok(())
 }
 
 #[test]

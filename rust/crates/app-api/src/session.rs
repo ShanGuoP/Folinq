@@ -188,6 +188,22 @@ impl Session {
         info.dirty = hash(&bytes) != saved_hash;
         info.can_undo = !undo.is_empty();
         info.can_redo = !redo.is_empty();
+        // Exclusive ownership proves no live picker is reading these files.
+        // Reclaim prepared exports interrupted by process death.
+        for entry in fs::read_dir(&directory)?.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("external-export-")
+                && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                && let Err(error) = fs::remove_dir_all(entry.path())
+            {
+                let _ = fs::write(
+                    directory.join("export-cleanup-error.log"),
+                    error.to_string(),
+                );
+            }
+        }
         Ok(Self {
             info,
             directory,
@@ -723,15 +739,103 @@ impl Session {
         pages: &[u16],
     ) -> Result<String> {
         check_version(self.info.version, version)?;
-        let path = self
-            .directory
-            .join(format!("export-{}.{}", Uuid::new_v4(), format));
+        ensure!(
+            ["pdf", "txt", "md", "docx", "png", "jpg"].contains(&format),
+            "INVALID_EXPORT_FORMAT"
+        );
+        let directory = tempfile::Builder::new()
+            .prefix("external-export-")
+            .tempdir_in(&self.directory)?;
+        let mut path = directory.path().join(format!("document.{format}"));
         if format == "pdf" && pages.is_empty() {
             publish_new(&path, &self.bytes()?)?;
         } else {
-            self.export(version, format, &path, pages)?;
+            let mode = match format {
+                "md" => "structured",
+                "docx" => "flow",
+                _ => "layout",
+            };
+            self.export_with_options(version, format, &path, pages, mode, false)?;
         }
+        if format == "md" {
+            // SAF publishes one document. Keep Markdown and original pictures
+            // together so relative image references survive moving/sharing it.
+            fn collect(root: &Path, current: &Path, entries: &mut Vec<PathBuf>) -> Result<()> {
+                for entry in fs::read_dir(current)? {
+                    let entry = entry?;
+                    if entry.file_type()?.is_dir() {
+                        collect(root, &entry.path(), entries)?;
+                    } else if entry.file_type()?.is_file() {
+                        entries.push(entry.path().strip_prefix(root)?.to_owned());
+                    }
+                }
+                Ok(())
+            }
+            let mut entries = Vec::new();
+            collect(directory.path(), directory.path(), &mut entries)?;
+            entries.sort();
+            path = directory.path().join("document.zip");
+            let mut archive = zip::ZipWriter::new(fs::File::create(&path)?);
+            for relative in entries {
+                archive.start_file(
+                    relative.to_string_lossy().replace('\\', "/"),
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Deflated),
+                )?;
+                std::io::copy(
+                    &mut fs::File::open(directory.path().join(relative))?,
+                    &mut archive,
+                )?;
+            }
+            archive.finish()?.sync_all()?;
+        }
+        let _retained = directory.keep();
         Ok(path.to_string_lossy().into())
+    }
+
+    pub fn discard_external_export(&self, path: &Path) -> Result<()> {
+        let path = path.canonicalize()?;
+        let directory = path.parent().context("INVALID_EXPORT_PATH")?;
+        ensure!(
+            directory.parent() == Some(self.directory.canonicalize()?.as_path())
+                && directory
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with("external-export-")),
+            "INVALID_EXPORT_PATH"
+        );
+        fs::remove_dir_all(directory)?;
+        Ok(())
+    }
+
+    pub fn prepare_ocr_export(&self, version: u64, request: &str) -> Result<String> {
+        check_version(self.info.version, version)?;
+        let directory = tempfile::Builder::new()
+            .prefix("external-export-")
+            .tempdir_in(&self.directory)?;
+        let path = crate::online_export::prepare(directory.path(), request)?;
+        let _retained = directory.keep();
+        Ok(path.to_string_lossy().into())
+    }
+
+    pub fn publish_external_export(
+        &self,
+        version: u64,
+        path: &Path,
+        destination: &Path,
+    ) -> Result<()> {
+        check_version(self.info.version, version)?;
+        let path = path.canonicalize()?;
+        let directory = path.parent().context("INVALID_EXPORT_PATH")?;
+        ensure!(
+            directory.parent() == Some(self.directory.canonicalize()?.as_path())
+                && directory
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.starts_with("external-export-")),
+            "INVALID_EXPORT_PATH"
+        );
+        publish_new(destination, &fs::read(path)?)
     }
 
     pub fn mark_external_saved(&mut self, version: u64) -> Result<()> {

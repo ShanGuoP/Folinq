@@ -4,7 +4,9 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/export_locations.dart';
+import '../../core/online_ocr.dart';
 import '../documents/document_controller.dart';
+import 'online_ocr_options.dart';
 
 List<int> parsePageRange(String input, int pageCount) {
   if (input.trim().isEmpty) return List.generate(pageCount, (i) => i);
@@ -39,6 +41,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
   bool succeeded = false;
   String mode = 'layout';
   bool removeMargins = false;
+  bool online = false;
   @override
   void initState() {
     super.initState();
@@ -65,6 +68,11 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
     });
     try {
       final pages = parsePageRange(range.text, snapshot.document!.pages.length);
+      final config = ref.read(onlineOcrConfigProvider);
+      if (online) config.validate();
+      final outputFormat = online && widget.format == 'md'
+          ? 'zip'
+          : widget.format;
       final perPage = split || ['png', 'jpg'].contains(widget.format);
       final name = snapshot.document!.name.replaceAll(
         RegExp(r'\.pdf$', caseSensitive: false),
@@ -85,20 +93,18 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         destination = await FilePicker.platform.saveFile(
           dialogTitle: '导出所选页面',
           fileName: initialDirectory == null
-              ? '$name.${widget.format}'
+              ? '$name.$outputFormat'
               : File(
-                  availableExportPath(
-                    '$initialDirectory/$name.${widget.format}',
-                  ),
+                  availableExportPath('$initialDirectory/$name.$outputFormat'),
                 ).uri.pathSegments.last,
           initialDirectory: initialDirectory,
           type: FileType.custom,
-          allowedExtensions: [widget.format],
+          allowedExtensions: [outputFormat],
         );
       }
       if (destination == null || !mounted || cancelled) return;
       if (!perPage) {
-        destination = withExportExtension(destination, widget.format);
+        destination = withExportExtension(destination, outputFormat);
       }
       final remembered = await locations.remember(
         perPage ? destination : File(destination).parent.path,
@@ -113,7 +119,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
         for (final job in jobs)
           availableExportPath(
             perPage
-                ? '$destination${Platform.pathSeparator}$name-page-${(job.first + 1).toString().padLeft(4, '0')}.${widget.format}'
+                ? '$destination${Platform.pathSeparator}$name-page-${(job.first + 1).toString().padLeft(4, '0')}.$outputFormat'
                 : destination,
           ),
       ];
@@ -139,16 +145,29 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
             current?.version != document.version) {
           throw const FormatException('文档已发生变化，已停止导出。');
         }
-        await controller.command(
-          'export',
-          value: jsonEncode({
-            'format': widget.format,
-            'mode': mode,
-            'remove_repeated_margins': removeMargins && !perPage,
-            'pages': jobs[i],
-            'destination': paths[i],
-          }),
-        );
+        if (online) {
+          final saved = await controller.exportOnline(
+            widget.format,
+            jobs[i],
+            config,
+            destination: paths[i],
+            onProgress: (value) {
+              if (mounted) setState(() => message = value);
+            },
+          );
+          if (saved == null) throw const FormatException('导出未完成，请重试。');
+        } else {
+          await controller.command(
+            'export',
+            value: jsonEncode({
+              'format': widget.format,
+              'mode': mode,
+              'remove_repeated_margins': removeMargins && !perPage,
+              'pages': jobs[i],
+              'destination': paths[i],
+            }),
+          );
+        }
         final error = ref.read(documentProvider).error;
         if (error != null) throw FormatException(error);
         if (!mounted) return;
@@ -221,7 +240,13 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
                 else
                   const Text('每页输出一张图片，保存到所选文件夹。'),
                 const SizedBox(height: 12),
-                if (['docx', 'md'].contains(widget.format)) ...[
+                if (['docx', 'md', 'txt'].contains(widget.format))
+                  OnlineOcrOptions(
+                    enabled: online,
+                    running: running,
+                    onChanged: (value) => setState(() => online = value),
+                  ),
+                if (!online && ['docx', 'md'].contains(widget.format)) ...[
                   DropdownButtonFormField<String>(
                     initialValue: mode,
                     decoration: const InputDecoration(labelText: '导出方式'),
@@ -295,9 +320,14 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
       actions: [
         TextButton(
           onPressed: running
-              ? () => setState(() => cancelled = true)
+              ? () {
+                  setState(() => cancelled = true);
+                  if (online) {
+                    ref.read(documentProvider.notifier).cancelOnlineExport();
+                  }
+                }
               : () => Navigator.pop(context),
-          child: Text(running ? '完成当前文件后停止' : '关闭'),
+          child: Text(running ? (online ? '取消在线识别' : '完成当前文件后停止') : '关闭'),
         ),
         FilledButton(
           onPressed: running
