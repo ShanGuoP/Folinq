@@ -64,7 +64,6 @@
 !/tools/package-windows.py
 !/tools/check-windows.ps1
 !/rust-toolchain.toml
-!/.github/workflows/windows.yml
 
 !/apps/flutter_app/analysis_options.yaml
 

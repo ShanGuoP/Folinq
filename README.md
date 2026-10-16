@@ -108,7 +108,7 @@ powershell -ExecutionPolicy Bypass -File tools/build-windows.ps1
 
 仓库保留 Windows 源码、构建脚本和应用品牌图标，本地文档、编译产物和测试资源保持忽略。构建准备脚本会自动下载并校验固定版本的 PDFium、中文字体源文件、字体工具和字体许可证，生成静态中文字体和资源清单，并检查品牌图标是否完整。需要 Python 3.11+，无需全局安装字体工具。字体输出固定时间戳并校验 SHA-256。
 
-Rust 由 `rust-toolchain.toml` 固定为 1.99.0，准备脚本检查 Flutter 3.47.7。仓库配置了 Windows CI，用于从空资源目录执行准备、分析、原生测试和发布构建。手动检查可运行 `tools/check-windows.ps1 -Prepare`；本机另加 `-LocalUiTests` 可运行本地 Flutter 测试，缺失的测试 PDF 会自动生成。Flutter 测试和视觉基线保留在本机，公开仓库的原生回归测试与 CI 配置会随源码提交。
+Rust 由 `rust-toolchain.toml` 固定为 1.99.0，准备脚本检查 Flutter 3.47.7。本地检查可运行 `tools/check-windows.ps1 -Prepare`，执行资源准备、分析和原生测试；另加 `-LocalUiTests` 可运行本地 Flutter 测试，缺失的测试 PDF 会自动生成。Flutter 测试和视觉基线保留在本机，公开仓库保留原生回归测试和检查脚本。
 
 构建结果位于：
 
