@@ -2,7 +2,14 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import 'online_ocr_errors.dart';
+export 'online_ocr_errors.dart' show OnlineOcrFailure;
+part 'online_ocr_jobs.dart';
+
+enum OnlineOcrProtocol { auto, jobs, layout }
 
 class OnlineOcrConfig {
   const OnlineOcrConfig({
@@ -10,19 +17,41 @@ class OnlineOcrConfig {
     this.token = '',
     this.scheme = 'token',
     this.allowHttp = false,
+    this.protocol = OnlineOcrProtocol.auto,
+    this.model = 'PaddleOCR-VL-1.6',
   });
+  static const officialEndpoint =
+      'https://paddleocr.aistudio-app.com/api/v2/ocr/jobs';
   final String endpoint, token, scheme;
+  final String model;
+  final OnlineOcrProtocol protocol;
   final bool allowHttp;
+  bool get usesJobs {
+    if (protocol != OnlineOcrProtocol.auto) {
+      return protocol == OnlineOcrProtocol.jobs;
+    }
+    final uri = Uri.tryParse(endpoint.trim());
+    return uri != null &&
+        (uri.host == 'paddleocr.aistudio-app.com' ||
+            uri.path
+                .replaceFirst(RegExp(r'/+$'), '')
+                .endsWith('/api/v2/ocr/jobs'));
+  }
+
   OnlineOcrConfig copyWith({
     String? endpoint,
     String? token,
     String? scheme,
     bool? allowHttp,
+    OnlineOcrProtocol? protocol,
+    String? model,
   }) => OnlineOcrConfig(
     endpoint: endpoint ?? this.endpoint,
     token: token ?? this.token,
     scheme: scheme ?? this.scheme,
     allowHttp: allowHttp ?? this.allowHttp,
+    protocol: protocol ?? this.protocol,
+    model: model ?? this.model,
   );
   Uri validate() {
     final uri = Uri.tryParse(endpoint.trim());
@@ -43,6 +72,24 @@ class OnlineOcrConfig {
         token.codeUnits.any((c) => c < 32 || c > 126)) {
       throw const FormatException('Token 或鉴权方式无效。');
     }
+    if (uri.host == 'paddleocr.aistudio-app.com' && uri.scheme != 'https') {
+      throw const FormatException('官方云端服务必须使用 HTTPS。');
+    }
+    if (usesJobs) {
+      if (token.trim().isEmpty) {
+        throw const FormatException('官方任务接口需要填写 AI Studio 访问令牌。');
+      }
+      if (model.trim().isEmpty || model.contains(RegExp(r'[\r\n\x00]'))) {
+        throw const FormatException('请填写有效的文档解析模型名称。');
+      }
+      final path = uri.path.replaceFirst(RegExp(r'/+$'), '');
+      return uri.replace(
+        path: path.isEmpty || path == '/api' ? '/api/v2/ocr/jobs' : path,
+      );
+    }
+    if (uri.path.contains('/api/v2/ocr/jobs')) {
+      throw const FormatException('此地址是异步任务接口，请将服务类型改为“按地址自动判断”或“官方云端任务”。');
+    }
     return uri;
   }
 }
@@ -57,25 +104,123 @@ class OnlineOcrSettings extends Notifier<OnlineOcrConfig> {
 }
 
 class OnlineOcrCancelled implements Exception {
+  const OnlineOcrCancelled({this.jobId});
+  final String? jobId;
   @override
-  String toString() => '已取消在线识别，未发布导出文件。';
+  String toString() => jobId == null
+      ? '已取消在线识别，未发布导出文件。'
+      : '已停止等待，云端任务可能继续处理。同一文档和页面再次导出时会继续查询原任务。\n任务编号：$jobId';
 }
 
-/// PaddleOCR synchronous layout-parsing protocol. No submission retries and no
+/// PaddleOCR jobs and synchronous layout-parsing. No submission retries and no
 /// redirect forwarding of credentials. The client lives for one export only.
 class OnlineOcrClient {
+  OnlineOcrClient({
+    this.pollInterval = const Duration(seconds: 3),
+    this.timeout,
+  });
+  final Duration pollInterval;
+  final Duration? timeout;
   final HttpClient _http = HttpClient()
     ..connectionTimeout = const Duration(seconds: 20);
   bool _cancelled = false;
   int _resourceBytes = 0;
+  final _cancelSignal = Completer<void>();
+  String? jobId;
+  bool terminalJobFailure = false;
+  late OnlineOcrConfig _config;
+  late Uri _apiUri;
   static const maxPdfBytes = 25 * 1024 * 1024;
   void cancel() {
     _cancelled = true;
     _http.close(force: true);
+    if (!_cancelSignal.isCompleted) _cancelSignal.complete();
   }
 
   void checkCancelled() {
-    if (_cancelled) throw OnlineOcrCancelled();
+    if (_cancelled) throw OnlineOcrCancelled(jobId: jobId);
+  }
+
+  Future<Map> _jsonResponse(HttpClientResponse response) async {
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response) {
+        checkCancelled();
+        bytes.add(chunk.take(16384 - bytes.length).toList());
+        if (bytes.length >= 16384) break;
+      }
+      final payload = tryOcrJson(bytes.takeBytes());
+      if (payload is Map &&
+          ['11001', '11002', '11003'].contains('${payload['code']}')) {
+        terminalJobFailure = true;
+      }
+      throw ocrServiceFailure(
+        response.statusCode,
+        payload,
+        _config.token,
+        headerRequestId: response.headers.value('x-request-id'),
+        jobId: jobId,
+      );
+    }
+    final decoded = tryOcrJson(await _read(response, 96 * 1024 * 1024));
+    if (decoded is! Map) throw const FormatException('OCR 服务返回了无效的 JSON 结果。');
+    final code = decoded['code'] ?? decoded['errorCode'];
+    if (code != null && '$code' != '0') {
+      if (['11001', '11002', '11003'].contains('$code')) {
+        terminalJobFailure = true;
+      }
+      throw ocrServiceFailure(
+        response.statusCode,
+        decoded,
+        _config.token,
+        jobId: jobId,
+      );
+    }
+    return decoded;
+  }
+
+  Uri _resourceUri(String value) {
+    final uri = Uri.tryParse(value);
+    if (uri == null ||
+        !uri.hasAuthority ||
+        uri.userInfo.isNotEmpty ||
+        uri.hasFragment ||
+        (uri.scheme != 'https' &&
+            !(uri.scheme == 'http' &&
+                _config.allowHttp &&
+                _apiUri.scheme == 'http' &&
+                uri.origin == _apiUri.origin))) {
+      throw const FormatException('OCR 资源地址必须使用 HTTPS；可信 HTTP 服务仅允许同站资源。');
+    }
+    return uri;
+  }
+
+  Future<Uint8List> _download(String value, int limit) async {
+    var uri = _resourceUri(value);
+    for (var hop = 0; hop <= 3; hop++) {
+      checkCancelled();
+      final request = await _http.getUrl(uri);
+      request.followRedirects = false;
+      final response = await request.close();
+      // Result links may be BOS short links. Follow only validated resource
+      // redirects; these requests never carry the API Authorization header.
+      if ([301, 302, 303, 307, 308].contains(response.statusCode) && hop < 3) {
+        final location = response.headers.value(HttpHeaders.locationHeader);
+        if (location == null) throw const FormatException('OCR 资源重定向缺少目标地址。');
+        uri = _resourceUri(uri.resolve(location).toString());
+        await response.listen(null).cancel();
+        continue;
+      }
+      if (response.statusCode != 200) {
+        throw OnlineOcrFailure(
+          'OCR 结果或配图下载失败，未发布文件。',
+          status: response.statusCode,
+          jobId: jobId,
+        );
+      }
+      return _read(response, limit);
+    }
+    throw const FormatException('OCR 资源重定向次数过多。');
   }
 
   Future<Uint8List> _read(HttpClientResponse response, int limit) async {
@@ -97,19 +242,7 @@ class OnlineOcrClient {
     Uint8List bytes;
     final uri = Uri.tryParse(value);
     if (uri != null && ['https', 'http'].contains(uri.scheme)) {
-      // Resources carry no Authorization header, including same-host downloads.
-      if (uri.scheme != 'https' ||
-          uri.userInfo.isNotEmpty ||
-          !uri.hasAuthority) {
-        throw const FormatException('OCR 配图下载地址必须使用 HTTPS。');
-      }
-      final request = await _http.getUrl(uri);
-      request.followRedirects = false;
-      final response = await request.close();
-      if (response.statusCode != 200) {
-        throw FormatException('OCR 配图下载失败（HTTP ${response.statusCode}）。');
-      }
-      bytes = await _read(response, 16 * 1024 * 1024);
+      bytes = await _download(value, 16 * 1024 * 1024);
     } else {
       final raw = value.startsWith('data:')
           ? value.substring(value.indexOf(',') + 1)
@@ -132,18 +265,34 @@ class OnlineOcrClient {
     int pageCount,
     OnlineOcrConfig config, {
     bool includeImages = true,
+    String? resumeJobId,
+    void Function(String)? onJobCreated,
+    void Function(String)? onProgress,
   }) async {
     final uri = config.validate();
+    _config = config;
+    _apiUri = uri;
+    jobId = resumeJobId;
     try {
-      return await _recognize(
-        pdf,
-        pageCount,
-        config,
-        uri,
-        includeImages,
-      ).timeout(const Duration(minutes: 5));
+      final operation = config.usesJobs
+          ? _recognizeJob(
+              pdf,
+              pageCount,
+              includeImages,
+              onJobCreated,
+              onProgress,
+            )
+          : _recognize(pdf, pageCount, config, uri, includeImages);
+      return await operation.timeout(
+        timeout ?? Duration(minutes: config.usesJobs ? 10 : 5),
+      );
     } on TimeoutException {
-      throw const FormatException('在线 OCR 超时，未自动重试；可在服务后台确认请求状态后重试。');
+      throw OnlineOcrFailure(
+        jobId == null
+            ? '在线 OCR 超时，未自动重试。请求可能已提交，请先在服务后台确认。'
+            : '等待在线 OCR 超时，再次导出相同页面会继续查询原任务。',
+        jobId: jobId,
+      );
     } on SocketException {
       checkCancelled();
       throw const FormatException('无法连接 OCR 服务，请检查地址和网络。');
@@ -153,7 +302,7 @@ class OnlineOcrClient {
     } on HandshakeException {
       throw const FormatException('OCR 服务的 HTTPS 证书验证失败。');
     } finally {
-      _http.close(force: true);
+      cancel();
     }
   }
 
@@ -182,29 +331,19 @@ class OnlineOcrClient {
       utf8.encode(jsonEncode({'file': base64Encode(bytes), 'fileType': 0})),
     );
     final response = await request.close();
-    if (response.statusCode != 200) {
-      throw FormatException(
-        'OCR 请求失败（HTTP ${response.statusCode}），请检查地址、Token 和额度。',
-      );
-    }
-    final dynamic decoded;
-    try {
-      decoded = jsonDecode(
-        utf8.decode(await _read(response, 96 * 1024 * 1024)),
-      );
-    } on FormatException {
-      throw const FormatException('OCR 服务返回了无效 JSON 或超出限制的结果。');
-    }
-    if (decoded is! Map ||
-        (decoded['errorCode'] != null && decoded['errorCode'] != 0)) {
-      throw const FormatException('OCR 服务识别失败，请在服务后台查看原因。');
-    }
+    final decoded = await _jsonResponse(response);
     final result = decoded['result'];
     final results = result is Map ? result['layoutParsingResults'] : null;
+    return _parsePages(results, pageCount, includeImages);
+  }
+
+  Future<List<Map<String, Object>>> _parsePages(
+    Object? results,
+    int pageCount,
+    bool includeImages,
+  ) async {
     if (results is! List || results.length != pageCount) {
-      throw const FormatException(
-        'OCR 返回页数与所选范围不一致。请使用同步 layout-parsing 接口，避免导出缺页。',
-      );
+      throw const FormatException('OCR 返回页数与所选范围不一致。请检查服务的页数限制，避免导出缺页。');
     }
     final pages = <Map<String, Object>>[];
     for (final item in results) {

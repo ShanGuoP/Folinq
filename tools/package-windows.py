@@ -74,7 +74,7 @@ def main():
         '复杂 PDF 的 Word 排版仍需校对。\n'
         '扫描页可在 Word、Markdown、TXT 导出窗口启用在线 PaddleOCR，填写自己的服务地址和 Token。\n'
         '在线识别默认关闭，开启后会上传所选页面，可能消耗服务额度。\n'
-        '在线 Markdown 含配图并保存为 ZIP；在线 Word/TXT 仅导出识别文字。\n', encoding='utf-8-sig')
+        '在线 Word 保留标题、列表、可编辑表格和配图；Markdown 含配图并保存为 ZIP；TXT 为纯文字。\n', encoding='utf-8-sig')
     info = {'name': 'Folinq 页翎', 'created_at': now.isoformat(),
             'layout': 'Folinq.exe + runtime/', 'crt': str(crt.relative_to(vs)),
             'engine_sha256': sha256((runtime / 'app_api.dll').read_bytes()),

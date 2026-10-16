@@ -37,7 +37,7 @@ Folinq/
 
 ## 版本与开源地址
 
-Windows 程序与工作台使用统一的文件羽毛图标。点击工作台左上角的图标或「Folinq 页翎」，可以打开关于窗口，查看当前版本和构建号。版本信息来自正在运行的程序，本轮便携版为 **0.1.0（构建 1）**。
+Windows 程序与工作台使用统一的文件羽毛图标。点击工作台左上角的图标或「Folinq 页翎」，可以打开关于窗口，查看当前版本和构建号。版本信息来自正在运行的程序，本轮便携版为 **0.2.0（构建 2）**。
 
 项目开源地址：[github.com/ShanGuoP/Folinq](https://github.com/ShanGuoP/Folinq)。关于窗口中可以直接访问 GitHub，也可以复制地址；如果浏览器无法打开，地址仍会保留，方便手动访问。
 
@@ -91,17 +91,19 @@ Android 的首批功能与验证范围见下节；它还没有覆盖 Windows 工
 
 电脑和安卓版的 Word、Markdown、TXT 导出窗口提供「在线 OCR · PaddleOCR」开关，默认关闭。对于没有文字层的扫描 PDF，可以直接识别后导出，无需先给原 PDF 添加文字层。
 
-1. 填写**同步文档解析接口的完整地址**，例如 `https://你的服务/layout-parsing`。支持 PP-StructureV3 / PaddleOCR-VL 的 `file`、`fileType` 请求和 `result.layoutParsingResults[].markdown` 返回格式。仅 VLM 推理接口、百度 API Key/Secret Key 接口和异步任务接口不能直接填入。
-2. 填写服务的 Token，并按服务说明选择 `token` 或 `Bearer` 鉴权；自部署且没有鉴权时可留空。服务地址和密钥仅留在本次运行内，关闭软件后需重新填写。
+1. 使用 AI Studio 官方服务时，点击「填入官方地址」，使用 `https://paddleocr.aistudio-app.com/api/v2/ocr/jobs`，填写自己的 Token，并填写服务支持的模型名称（默认 `PaddleOCR-VL-1.6`，可手动改成 `PP-StructureV3` 或其他文档解析模型）。软件自动使用 Bearer 鉴权，上传 PDF 后等待异步任务完成。
+2. 自部署服务可选择同步文档解析接口，填写完整的 `/layout-parsing` 地址，按服务说明选择 `token` 或 `Bearer` 鉴权；没有鉴权时 Token 可留空。支持 `file`、`fileType` 请求和 `result.layoutParsingResults[].markdown` 返回格式。服务地址和密钥仅留在本次运行内。
 3. 选择页面范围后导出。开启开关并点击导出表示同意向所填服务上传这些页面，可能消耗服务额度。每次最多 100 页、25 MB；超出时请分批选择。
+
+官方异步任务提交后会显示任务状态。取消或超时会停止本机等待，云端任务可能继续；同一次运行中，在文档、页码、接口、模型和 Token 未改变时再次导出，会复用已取得的任务编号，避免重复提交。关闭软件后不会保留任务编号。
 
 部分自部署服务默认只处理前 10 页，建议先用 1–10 页试用；超过服务限制时会报缺页并停止保存。需要更多页时，服务端可按官方文档配置 `Serving.extra.max_num_input_imgs`。
 
-Markdown 保存为包含 `document.md` 与配图的 ZIP，各页配图分开放置，避免同名冲突。支持服务返回内联 Base64 图片或 HTTPS 图片地址；下载图片不会携带接口 Token。Word 和 TXT 提供识别出的文字，HTML / Markdown 表格会转成可读文字，不保留原生表格、配图和原始版式。识别结果需人工校对。
+Markdown 保存为包含 `document.md` 与配图的 ZIP，各页配图分开放置，避免同名冲突。支持服务返回内联 Base64 图片或 HTTPS 图片地址；下载图片不会携带接口 Token。Word 会把识别结果中的标题、粗体、斜体、编号和项目列表转换为可编辑内容，将 Markdown / HTML 表格转换为 Word 原生表格，支持 HTML 表格的横向与纵向合并单元格，并嵌入返回的 PNG/JPEG 配图。TXT 仍为纯文字。Word 按阅读顺序重新排版，不保证恢复原稿字体、分栏和精确位置，识别结果仍需人工校对。
 
 取消、鉴权失败、超时或返回缺页时不会显示导出成功；不会自动重试付费请求。在线结果只生成副本，保留 PDF 原件、编辑历史与未保存状态。公网服务请使用 HTTPS；使用可信内网的 HTTP 需要手动勾选允许明文传输。Android 手机连接自部署服务时，请填写手机可访问的服务地址，`localhost` 指的是手机自身。
 
-服务部署与协议参考 [PaddleOCR PP-StructureV3 官方文档](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PP-StructureV3.md)。没有内置公共识别地址或共享密钥，需要自行部署或取得相同协议的服务地址与访问权限。
+服务部署与协议参考 [PaddleOCR PP-StructureV3 官方文档](https://github.com/PaddlePaddle/PaddleOCR/blob/main/docs/version3.x/pipeline_usage/PP-StructureV3.md)。官方异步接口参考 [AI Studio 文档解析 API 文档](https://ai.baidu.com/ai-doc/AISTUDIO/fml7mozw5)。软件不提供共享密钥，需自行取得服务访问权限。
 
 ## Android 开发预览
 

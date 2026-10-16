@@ -45,9 +45,13 @@ pub(crate) fn prepare(directory: &Path, json: &str) -> Result<PathBuf> {
         "INVALID_EXPORT_FORMAT"
     );
     let mut markdown = String::new();
+    let mut word_pages = Vec::new();
     let mut resources = BTreeMap::new();
     let mut total = 0usize;
     for (index, page) in request.pages.into_iter().enumerate() {
+        if request.format == "docx" {
+            word_pages.push((page.markdown.clone(), format!("page-{:04}/", index + 1)));
+        }
         let mut text = page.markdown;
         ensure!(
             text.len() <= 8 * 1024 * 1024 && page.images.len() <= 500,
@@ -97,11 +101,12 @@ pub(crate) fn prepare(directory: &Path, json: &str) -> Result<PathBuf> {
         }
         archive.finish()?.sync_all()?;
     } else {
-        let (text, word) = pdf_engine::conversion::ocr_text_exports(&markdown)?;
         let bytes = if request.format == "txt" {
-            text.into_bytes()
+            pdf_engine::conversion::ocr_text_exports(&markdown)?
+                .0
+                .into_bytes()
         } else {
-            word
+            pdf_engine::ocr_docx::export_pages(&word_pages, &resources)?
         };
         let mut file = fs::File::create(&path)?;
         file.write_all(&bytes)?;
@@ -129,6 +134,40 @@ mod tests {
         assert!(zip.by_name("page-0002/imgs/a.png").is_ok());
         let bad = serde_json::json!({"format":"md","pages":[{"markdown":"text","images":{"../escape.png":image}}]});
         assert!(prepare(dir.path(), &bad.to_string()).is_err());
+        Ok(())
+    }
+    #[test]
+    fn word_keeps_same_named_page_images_and_native_structure() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP438EAAAQRAYhxoDirAAAAAElFTkSuQmCC";
+        let first = serde_json::json!({"markdown":"# Heading\n\n**bold**\n\n![picture](imgs/a.png \"caption\")", "images":{"imgs/a.png":image}});
+        let second = serde_json::json!({"markdown":"<table\n border=1>\n<tr>\n<td nowrap>R&D</td>\n<td><img src='imgs/a.png'></td>\n</tr>\n</table>", "images":{"imgs/a.png":image}});
+        let path = prepare(
+            dir.path(),
+            &serde_json::json!({"format":"docx","pages":[first,second]}).to_string(),
+        )?;
+        let mut zip = zip::ZipArchive::new(fs::File::open(path)?)?;
+        let mut xml = String::new();
+        zip.by_name("word/document.xml")?.read_to_string(&mut xml)?;
+        assert!(xml.contains("Heading1") && xml.contains("<w:b") && xml.contains("<w:tbl>"));
+        assert_eq!(xml.matches("<w:drawing>").count(), 2);
+        assert!(xml.contains("w:type=\"page\""));
+        assert_eq!(
+            zip.file_names()
+                .filter(|n| n.starts_with("word/media/"))
+                .count(),
+            2
+        );
+        Ok(())
+    }
+    #[test]
+    fn missing_word_image_does_not_create_output() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let request =
+            serde_json::json!({"format":"docx","pages":[{"markdown":"![picture](missing.png)"}]})
+                .to_string();
+        assert!(prepare(dir.path(), &request).is_err());
+        assert!(!dir.path().join("document.docx").exists());
         Ok(())
     }
 }

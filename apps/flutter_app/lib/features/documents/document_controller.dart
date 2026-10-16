@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:async';
 import 'dart:io';
+import 'package:crypto/crypto.dart' as crypto;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../core/app_directories.dart';
 import '../../core/document.dart';
 import '../../core/rust/api.dart' as rust;
@@ -370,6 +373,10 @@ class DocumentController extends Notifier<DocumentState> {
   String? lastExternalExportUri;
   OnlineOcrClient? _onlineOcr;
   bool _onlineCancelled = false;
+  // Bind cloud tasks to exactly the document revision, ordered page selection,
+  // endpoint, model and credential. Keep only an ID in memory to resume waiting
+  // or export another format without silently creating a second paid task.
+  final _onlineJobs = <(String, int, String, String, String, String), String>{};
   void cancelOnlineExport() {
     _onlineCancelled = true;
     _onlineOcr?.cancel();
@@ -393,12 +400,21 @@ class DocumentController extends Notifier<DocumentState> {
     }
     _onlineCancelled = false;
     final client = _onlineOcr = OnlineOcrClient();
+    final identity = (
+      document.id,
+      document.version,
+      pages.join(','),
+      config.validate().toString(),
+      config.model.trim(),
+      crypto.sha256.convert(utf8.encode(config.token.trim())).toString(),
+    );
+    final resumeId = config.usesJobs ? _onlineJobs[identity] : null;
     final prepared = <String>[];
     var completedState = previous;
     lastExternalExportUri = null;
     state = previous.withBusy(true);
     void check() {
-      if (_onlineCancelled) throw OnlineOcrCancelled();
+      if (_onlineCancelled) throw OnlineOcrCancelled(jobId: client.jobId);
       if (state.document?.id != document.id ||
           state.document?.version != document.version) {
         throw const FormatException('文档已发生变化，请重新导出。');
@@ -427,7 +443,15 @@ class DocumentController extends Notifier<DocumentState> {
         File(input),
         pages.length,
         config,
-        includeImages: format == 'md',
+        includeImages: format == 'md' || format == 'docx',
+        resumeJobId: resumeId,
+        onJobCreated: (id) {
+          _onlineJobs[identity] = id;
+          if (_onlineJobs.length > 16) {
+            _onlineJobs.remove(_onlineJobs.keys.first);
+          }
+        },
+        onProgress: onProgress,
       );
       check();
       onProgress?.call('识别完成，正在生成导出文件…');
@@ -463,6 +487,7 @@ class DocumentController extends Notifier<DocumentState> {
       }
       return saved;
     } catch (error) {
+      if (client.terminalJobFailure) _onlineJobs.remove(identity);
       completedState = previous.withError(readableError('$error'));
       rethrow;
     } finally {
@@ -1016,6 +1041,12 @@ String readableError(String error) {
     'DESTINATION_EXISTS_OR_UNWRITABLE': '目标文件已存在或无法写入。请换一个文件名，并确认保存位置可用。',
     'LAST_PAGE': '文档至少需要保留一页。',
     'OCR_LANGUAGE_UNAVAILABLE': '本机尚未安装对应的 Windows OCR 语言，请在系统语言设置中安装。',
+    'OCR_MISSING_IMAGE': 'OCR 配图资源缺失，未保存 Word。请检查服务返回的图片资源。',
+    'OCR_INVALID_IMAGE': 'OCR 配图无法读取，未保存文件。',
+    'OCR_INVALID_TABLE': 'OCR 表格结构不完整，未保存 Word。可先导出 Markdown 检查识别结果。',
+    'OCR_INVALID_HTML': 'OCR 返回的文档结构无法解析，未保存 Word。',
+    'OCR_STRUCTURE_LIMIT': 'OCR 文档结构过于复杂，请缩小导出页数。',
+    'OCR_IMAGE_LIMIT': 'OCR 配图尺寸过大，请缩小导出范围。',
     'TASK_CANCELLED': '识别已取消，文档未修改。',
     'UNSUPPORTED_TEXT': '当前原文字对象只支持单行替换。需要多行内容时，请使用“添加文字”。',
     'LAYOUT_COLLISION': '新字形与相邻对象发生重叠。请调整内容或开启缩小字号。',
@@ -1023,5 +1054,5 @@ String readableError(String error) {
   for (final entry in messages.entries) {
     if (error.contains(entry.key)) return '${entry.value} (${entry.key})';
   }
-  return error;
+  return error.replaceFirst(RegExp(r'^(?:FormatException|Bad state):\s*'), '');
 }

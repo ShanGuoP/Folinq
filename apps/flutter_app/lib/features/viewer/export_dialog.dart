@@ -1,8 +1,10 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../core/export_locations.dart';
 import '../../core/online_ocr.dart';
 import '../documents/document_controller.dart';
@@ -186,7 +188,7 @@ class _ExportDialogState extends ConsumerState<ExportDialog> {
       if (mounted) {
         setState(
           () => message =
-              '$failure${completed > 0 ? '\n已完成的 $completed 个文件保留。' : ''}',
+              '${readableError('$failure')}${completed > 0 ? '\n已完成的 $completed 个文件保留。' : ''}',
         );
       }
     } finally {

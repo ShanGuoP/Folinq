@@ -1,7 +1,7 @@
 name: local_pdf_editor
 description: Offline PDF editing workbench powered by Rust.
 publish_to: none
-version: 0.1.0+1
+version: 0.2.0+2
 environment:
   sdk: '>=3.8.0 <4.0.0'
 dependencies:
