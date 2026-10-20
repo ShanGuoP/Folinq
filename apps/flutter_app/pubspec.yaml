@@ -1,5 +1,5 @@
 name: local_pdf_editor
-description: Offline PDF editing workbench powered by Rust.
+description: Folinq PDF — read, edit, organize and convert PDFs locally.
 publish_to: none
 version: 0.2.0+2
 environment:

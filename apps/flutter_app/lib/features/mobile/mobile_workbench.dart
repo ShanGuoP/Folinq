@@ -280,7 +280,10 @@ class _MobileWorkbenchState extends ConsumerState<MobileWorkbench> {
                     enabled: !busy && document.canRedo,
                     child: const Text('重做'),
                   ),
-                const PopupMenuItem(value: 'about', child: Text('关于 Folinq')),
+                const PopupMenuItem(
+                  value: 'about',
+                  child: Text('关于 ${AppBrand.name}'),
+                ),
               ],
             ),
           ],

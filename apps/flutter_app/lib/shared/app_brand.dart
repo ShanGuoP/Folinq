@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 abstract final class AppBrand {
-  static const name = 'Folinq 页翎';
+  static const name = 'Folinq PDF';
   static const icon = 'assets/branding/folinq.png';
   static final projectUrl = Uri.parse('https://github.com/ShanGuoP/Folinq');
 }

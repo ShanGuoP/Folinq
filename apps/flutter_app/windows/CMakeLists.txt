@@ -1,10 +1,10 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.15)
-project(Folinq LANGUAGES CXX)
+project(FolinqPDF LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "Folinq")
+set(BINARY_NAME "FolinqPDF")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
@@ -65,7 +65,9 @@ include(flutter/generated_plugins.cmake)
 set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
 # Make the "install" step default, as it's required to run.
 set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQUAL "$<TARGET_FILE_DIR:local_pdf_editor>")
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT
+    OR CMAKE_INSTALL_PREFIX STREQUAL "$<TARGET_FILE_DIR:local_pdf_editor>"
+    OR CMAKE_INSTALL_PREFIX STREQUAL "$<TARGET_FILE_DIR:Folinq>")
   set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 endif()
 
@@ -124,7 +126,7 @@ target_compile_definitions(folinq_launcher PRIVATE
 target_include_directories(folinq_launcher PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/runner")
 target_link_libraries(folinq_launcher PRIVATE user32)
 set_target_properties(folinq_launcher PROPERTIES
-  OUTPUT_NAME "FolinqLauncher"
+  OUTPUT_NAME "FolinqPDFLauncher"
   MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 add_dependencies(${BINARY_NAME} folinq_launcher)
 install(TARGETS folinq_launcher RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"

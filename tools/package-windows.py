@@ -26,13 +26,13 @@ def main():
     build = app / 'build/windows/x64'
     release = build / 'runner/Release'
     now = datetime.datetime.now().astimezone()
-    name = 'Folinq-windows-x64-' + now.strftime('%Y%m%d-%H%M%S')
-    stage = root / '.work/packages' / name / 'Folinq'
+    name = 'Folinq-PDF-windows-x64-' + now.strftime('%Y%m%d-%H%M%S')
+    stage = root / '.work/packages' / name / 'Folinq-PDF'
     stage.mkdir(parents=True, exist_ok=False)
     runtime = stage / 'runtime'
     runtime.mkdir()
-    shutil.copy2(release / 'FolinqLauncher.exe', stage / 'Folinq.exe')
-    for filename in ('Folinq.exe', 'app_api.dll', 'flutter_windows.dll',
+    shutil.copy2(release / 'FolinqPDFLauncher.exe', stage / 'FolinqPDF.exe')
+    for filename in ('FolinqPDF.exe', 'app_api.dll', 'flutter_windows.dll',
                      'pdfium.dll', 'native_assets.json'):
         shutil.copy2(release / filename, runtime / filename)
     # Flutter plugins (including desktop file-drop support) ship native DLLs.
@@ -46,7 +46,7 @@ def main():
     linker = Path(next(line[len(linker_key):] for line in cache.splitlines()
                        if line.startswith(linker_key)))
     imports = subprocess.check_output(
-        [str(linker.with_name('dumpbin.exe')), '/dependents', str(stage / 'Folinq.exe')],
+        [str(linker.with_name('dumpbin.exe')), '/dependents', str(stage / 'FolinqPDF.exe')],
         text=True, errors='replace')
     dependencies = {name.lower() for name in re.findall(
         r'^\s+([\w.-]+\.dll)\s*$', imports, re.MULTILINE | re.IGNORECASE)}
@@ -64,19 +64,19 @@ def main():
     for filename in ('README.md', 'LICENSE'):
         shutil.copy2(root / filename, runtime / filename)
     (stage / '使用说明.txt').write_text(
-        'Folinq 页翎 — Windows 64 位便携版\n\n'
-        '请完整解压后，双击根目录的 Folinq.exe 启动。\n'
+        'Folinq PDF — Windows 64 位便携版\n\n'
+        '请完整解压后，双击根目录的 FolinqPDF.exe 启动。\n'
         'runtime 文件夹包含全部运行库和资源，请保留在启动程序旁边。\n'
         '升级时完整解压到新文件夹即可，原有本地项目和恢复记录继续保留。\n\n'
-        '点击工作台左上角的图标或 Folinq 页翎，可查看版本、访问或复制项目开源地址。\n'
+        '点击工作台左上角的图标或 Folinq PDF，可查看版本、访问或复制项目开源地址。\n'
         '开源地址：https://github.com/ShanGuoP/Folinq\n\n'
         '支持拖入 PDF 打开、删除最近记录（保留源文件）、可编辑 Word 导出、输出目录记忆。\n'
         '复杂 PDF 的 Word 排版仍需校对。\n'
         '扫描页可在 Word、Markdown、TXT 导出窗口启用在线 PaddleOCR，填写自己的服务地址和 Token。\n'
         '在线识别默认关闭，开启后会上传所选页面，可能消耗服务额度。\n'
         '在线 Word 保留标题、列表、可编辑表格和配图；Markdown 含配图并保存为 ZIP；TXT 为纯文字。\n', encoding='utf-8-sig')
-    info = {'name': 'Folinq 页翎', 'created_at': now.isoformat(),
-            'layout': 'Folinq.exe + runtime/', 'crt': str(crt.relative_to(vs)),
+    info = {'name': 'Folinq PDF', 'created_at': now.isoformat(),
+            'layout': 'FolinqPDF.exe + runtime/', 'crt': str(crt.relative_to(vs)),
             'engine_sha256': sha256((runtime / 'app_api.dll').read_bytes()),
             'app_sha256': sha256((runtime / 'data/app.so').read_bytes())}
     (runtime / 'BUILD_INFO.json').write_text(
@@ -90,12 +90,12 @@ def main():
     with zipfile.ZipFile(archive, 'x', compression=zipfile.ZIP_DEFLATED, compresslevel=6) as z:
         for p in sorted(stage.rglob('*')):
             if p.is_file():
-                z.write(p, 'Folinq/' + p.relative_to(stage).as_posix())
+                z.write(p, 'Folinq-PDF/' + p.relative_to(stage).as_posix())
     with zipfile.ZipFile(archive) as z:
         if z.testzip() is not None:
             raise RuntimeError('Archive CRC check failed')
         for path, digest in manifest.items():
-            if sha256(z.read('Folinq/' + path)) != digest:
+            if sha256(z.read('Folinq-PDF/' + path)) != digest:
                 raise RuntimeError('Archive content mismatch: ' + path)
         entries = len(z.namelist())
     digest = sha256(archive.read_bytes())

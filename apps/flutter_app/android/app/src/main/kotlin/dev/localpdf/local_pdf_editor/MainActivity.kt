@@ -42,7 +42,7 @@ class MainActivity : FlutterActivity() {
                     val intent = Intent(Intent.ACTION_SEND).apply {
                         type = call.argument<String>("mime") ?: "application/octet-stream"
                         putExtra(Intent.EXTRA_STREAM, uri)
-                        clipData = android.content.ClipData.newRawUri("Folinq", uri)
+                        clipData = android.content.ClipData.newRawUri("Folinq PDF", uri)
                         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     }
                     startActivity(Intent.createChooser(intent, "分享文档"))

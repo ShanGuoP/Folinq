@@ -2,7 +2,7 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:usesCleartextTraffic="true"
-        android:label="Folinq 页翎"
+        android:label="Folinq PDF"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
