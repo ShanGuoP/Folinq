@@ -1,4 +1,4 @@
-# Folinq PDF
+# Folinq PDF（页翎）
 
 在本机阅读、编辑、整理和转换 PDF。支持 Windows 便携版，并提供 Android 预览版。
 
